@@ -11,20 +11,31 @@ Built by **TargetAI** as a reusable booking platform, piloted on this client.
 > to Postgres if Sheets/Apps Script ever becomes the bottleneck. Nothing in this document should
 > describe Prisma/Postgres as current — if you find such a reference, it's a bug, fix it.
 
+> **Corrected 2026-07-20 (second correction, same day): the public website is a separate
+> project**, designed and built outside this repository, on its own stack/host/domain. This
+> repository does **not** build the final public Esquece website — the homepage and `/reservar`
+> pages that exist here are minimal development/test pages only (kept for local API testing, not
+> invested in visually, not the production site). What this repository *does* build for the
+> website is the **secure public booking API** it consumes — see §2 and `WEBSITE_INTEGRATION.md`.
+> The WhatsApp agent and admin dashboard are still built inside this repository, same as before.
+
 ## 1. Core principle: this is a booking-and-availability system, not a chatbot
 
-The product is **not** "a WhatsApp bot with AI." The product is a **shared booking and
-availability engine**, backed by a CRM, with three interfaces attached to it:
+The product is **not** "a WhatsApp bot with AI," and this repository is **not** "the Esquece
+website." The product is a **shared booking and availability engine**, backed by a CRM, reachable
+by three interfaces:
 
-1. Public booking website.
-2. WhatsApp agent.
-3. Admin dashboard.
+1. The separate public booking website (**external to this repo** — consumes the API this repo
+   exposes; see §2).
+2. WhatsApp agent (built here).
+3. Admin dashboard (built here).
 
 All three go through the **same** server-side CRM client, which calls the **same** Apps Script
 API, which enforces the **same** availability rules against the **same** Google Sheet. There is
 no interface-specific booking logic anywhere, and no interface ever treats a locally-computed
 slot as final — the Apps Script API is the only thing allowed to actually create, cancel, or
-reschedule an appointment.
+reschedule an appointment. This holds exactly as much for the separate website (via the public
+API) as it does for WhatsApp and admin, both built directly against the same `CrmClient`.
 
 Claude (Anthropic API) is an **interpretation and communication layer only**. It reads natural
 language and proposes a structured interpretation; it writes natural-sounding replies in
@@ -36,20 +47,37 @@ memory, not the frontend, not the WhatsApp message history, and not any local da
 ## 2. High-level architecture
 
 ```
-Public website / Admin dashboard / WhatsApp webhook
-                 ↓
-        Next.js server application
-                 ↓
-   Central server-side CRM client (CrmClient interface)
-                 ↓
-        Google Apps Script Web API
-                 ↓
-             Google Sheets CRM
+   Separate public website        WhatsApp (Meta)         Admin dashboard
+   (own repo/host/domain)                │                (built here)
+              │                          │                       │
+              │ HTTPS, public booking    │ webhook               │ same app,
+              │ API (this repo)          │                       │ authenticated
+              ▼                          ▼                       ▼
+                    Next.js server application (this repo)
+                                   │
+                                   ▼
+              Central server-side CRM client (CrmClient interface)
+                                   │
+                                   ▼
+                        Google Apps Script Web API
+                                   │
+                                   ▼
+                             Google Sheets CRM
 ```
 
-- **Next.js (TypeScript, App Router)** — single application serving the public website, the
-  admin dashboard, and all API routes (booking API, WhatsApp webhook, cron). One deployable
-  unit — no monorepo, no separate services.
+The separate website **never** talks to Apps Script directly and never receives
+`CRM_API_KEY`/`CRM_SIGNING_SECRET` — it only ever calls this repo's public API
+(`/api/public/*`, §7 in `PROJECT_PLAN.md` / Phase F), the same way a browser calls any backend.
+Everything below the "Next.js server application" line is identical regardless of which of the
+three interfaces triggered the request — that's what makes the cross-channel guarantees in §3
+possible: one booking through the website, WhatsApp, or admin all update the exact same
+Apps Script-guarded Google Sheet.
+
+- **Next.js (TypeScript, App Router)** — single application serving the public booking API
+  (consumed by the separate website), the admin dashboard, and the WhatsApp webhook/cron routes.
+  Also serves minimal, non-production dev/test pages (home, `/reservar`) used to exercise the
+  API locally — not the final Esquece website. One deployable unit — no monorepo, no separate
+  services.
 - **Google Sheets** — the CRM. Business settings, services, barbers, schedules, breaks, time
   off, blocked slots, customers, appointments, conversations, messages, webhook dedup, human
   handoffs, notifications, and audit log all live in dedicated sheets. See `CRM_SCHEMA.md`
@@ -180,3 +208,37 @@ Payments/deposits, loyalty programs, commissions, marketing campaigns, automated
 requests, waitlists, and advanced analytics are **not** implemented. Google Calendar sync is
 implemented but optional/off by default (`ENABLE_CALENDAR_SYNC`). See `PROJECT_PLAN.md` for the
 full phase breakdown and `IMPLEMENTATION_STATUS.md` for what's actually done right now.
+
+## 10. Cross-channel synchronization guarantee
+
+This is not a separate feature to build — it's a direct consequence of §1/§2: because the
+website API, WhatsApp agent, and admin dashboard all call the same `CrmClient`, which calls the
+same Apps Script API, against the same Sheet, the following hold automatically, not by any
+channel-specific code:
+
+- **A website booking blocks WhatsApp.** The moment `createAppointment` commits (via the public
+  API), that barber+slot's interval is in `APPOINTMENTS` with an active status. The very next
+  `getAvailability` call from *any* channel — including WhatsApp's next message in the same
+  second — reads the same sheet and no longer offers it.
+- **A WhatsApp booking blocks the website.** Same mechanism, reversed.
+- **Admin changes take effect everywhere immediately.** Blocking a slot, changing hours, adding
+  a break, deactivating a barber/service — all are writes to the same sheets `getAvailability`
+  reads. There is no cache layer with its own invalidation logic to keep in sync; the next read
+  from any channel is already correct.
+- **Cancellation and reschedule propagate the same way** — a `CANCELLED` status stops blocking
+  immediately; a reschedule's new interval blocks and its old one frees, atomically, under the
+  same `LockService` guarantee described in §5.
+- **Concurrent bookings across channels** are resolved by the exact same mechanism as concurrent
+  bookings within one channel (§5) — Apps Script's script lock doesn't know or care whether the
+  two racing `createAppointment` calls came from the website, WhatsApp, or admin.
+
+What this means for testing (see `TESTING.md`'s cross-channel test suite, Phase K): these
+guarantees don't need channel-specific integration tests re-proving the sync mechanism itself —
+they need tests confirming each channel actually goes through `CrmClient` and never computes or
+caches availability on its own. The one exception worth testing directly is `MockCrmClient`
+(§2): since it's a second, necessarily-separate implementation of the same rules (no real Apps
+Script to call locally), its cross-channel behavior is verified by construction — same
+in-memory store, same object, regardless of which method a test calls it through — but that
+alone doesn't prove `AppsScriptCrmClient` behaves identically under real concurrent HTTP
+requests, which requires an actual deployment (`IMPLEMENTATION_STATUS.md` tracks this
+honestly).

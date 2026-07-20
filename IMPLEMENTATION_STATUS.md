@@ -7,21 +7,29 @@ resumable without re-deriving context from the conversation.
 ## Architecture (current, authoritative)
 
 ```
-Public website / Admin dashboard / WhatsApp webhook
-                 ↓
-        Next.js server application
-                 ↓
-   Central server-side CRM client (CrmClient interface)
-                 ↓
-        Google Apps Script Web API
-                 ↓
-             Google Sheets CRM
+Separate public website (own repo)   WhatsApp (Meta)   Admin dashboard (built here)
+                 │                          │                       │
+                 │   public booking API     │  webhook              │
+                 ▼                          ▼                       ▼
+                    Next.js server application (this repo)
+                                   │
+                                   ▼
+              Central server-side CRM client (CrmClient interface)
+                                   │
+                                   ▼
+                        Google Apps Script Web API
+                                   │
+                                   ▼
+                             Google Sheets CRM
 ```
 
 Google Sheets + Apps Script is the source of truth for business data, appointments,
-availability, conversation state, and dedup — **not** PostgreSQL/Prisma. See
-`ARCHITECTURE.md` for the full rationale and `MIGRATION_TO_POSTGRESQL.md` for the documented
-future path if Sheets/Apps Script capacity is ever exceeded.
+availability, conversation state, and dedup — **not** PostgreSQL/Prisma. **The public website is
+a separate project, built outside this repository** — this repo exposes the secure API it
+consumes (Phase F), plus the WhatsApp agent and admin dashboard. See `ARCHITECTURE.md` for the
+full rationale, its §10 for the cross-channel synchronization guarantee, and
+`MIGRATION_TO_POSTGRESQL.md` for the documented future path if Sheets/Apps Script capacity is
+ever exceeded.
 
 ## Phase status
 
@@ -31,8 +39,8 @@ future path if Sheets/Apps Script capacity is ever exceeded.
 | B | Apps Script CRM foundation | DONE |
 | C | Apps Script CRM domain (services/barbers/customers/etc.) | DONE |
 | D | Apps Script booking engine (availability, locks, atomic create) | DONE |
-| E | Next.js CRM integration (CrmClient, AppsScriptCrmClient, MockCrmClient) | NOT STARTED |
-| F | Public website (full booking flow, management page) | NOT STARTED |
+| E | Next.js CRM integration (CrmClient, AppsScriptCrmClient, MockCrmClient) | DONE |
+| F | Secure public booking API for the separate website (not the website itself) | NOT STARTED |
 | G | Admin dashboard | NOT STARTED |
 | H | WhatsApp infrastructure (webhook, Meta client, dedup) | NOT STARTED |
 | I | Claude conversational agent | NOT STARTED |
@@ -229,47 +237,107 @@ future path if Sheets/Apps Script capacity is ever exceeded.
   single most correctness-critical component — but it is still not a live-deployment proof; see
   `apps-script/README.md`.
 
+- (Phase E) **Important correction absorbed mid-phase**: the public website is a separate
+  project (own repo/host/domain), not built here. Updated `ARCHITECTURE.md` (§1, §2 diagram
+  rewritten, new §10 "Cross-channel synchronization guarantee") and `PROJECT_PLAN.md` (Phase F
+  redefined as "secure public booking API for the separate website," guardrail added) before
+  writing any more code, so Phase F starts from the corrected premise instead of building a
+  website to throw away.
+- (Phase E) Retired the Phase-1 `src/lib/booking-engine/*` stub module (Postgres-era
+  `NotImplementedError` placeholders) and its test — fully superseded by the CRM client; keeping
+  it would have been dead, contradictory code.
+- (Phase E) `src/lib/env/server.ts` — server-only (`import "server-only"`), Zod-validated
+  environment config. Provider-specific getters (`getCrmConfig`, `getAnthropicConfig`,
+  `getMetaConfig`) throw a clear, specific error listing exactly which env vars are missing when
+  a non-mock provider is selected without its credentials — never a silent mock fallback.
+- (Phase E) `src/lib/logging/logger.ts` — minimal structured logger; redacts any field whose key
+  matches `token|secret|apikey|password|authorization`, and truncates phone-number fields to a
+  last-4-digits suffix.
+- (Phase E) `src/lib/crm/types.ts` — full domain types mirroring `CRM_SCHEMA.md`, and the
+  `CrmClient` interface (every method from `API_CONTRACT.md`'s action table).
+- (Phase E) `src/lib/crm/schemas.ts` — Zod schemas validating every CRM response shape before
+  Next.js trusts it (SECURITY.md "output validation").
+- (Phase E) `src/lib/crm/signing.ts` — `stableStringify`/`buildCanonicalString`/`computeHmacHex`/
+  `buildSignedRequest`, deliberately **not** wrapped in `import "server-only"` (it holds no
+  secrets itself — they're passed as parameters), so it can be unit-tested directly.
+  **Verified against all three shared test vectors in `API_CONTRACT.md` — 6/6 tests pass**,
+  proving this Next.js implementation and `apps-script/Security.gs` produce byte-identical
+  signatures for the same input, which is the actual cross-system compatibility guarantee the
+  whole signing scheme depends on.
+- (Phase E) `src/lib/crm/appsScriptClient.ts` — `AppsScriptCrmClient`: signs every request,
+  enforces the configured timeout via `AbortController`, validates the response envelope and
+  then the `data` payload against the Zod schemas, maps every documented CRM error code, and
+  retries once for calls explicitly marked safe (reads, plus `createAppointment` — safe because
+  Apps Script's idempotency-key handling makes a retried create return the original, not a
+  duplicate). Explicitly does **not** retry `rescheduleAppointment` (no idempotency key —
+  documented reasoning in the code) or plain `upsertCustomer` calls made outside
+  `createAppointment`.
+- (Phase E) `src/lib/crm/mockClient.ts` — `MockCrmClient`: a second, necessarily-separate,
+  in-memory implementation of the same `BOOKING_RULES.md` rules (there's no way to call a real
+  Apps Script deployment offline), documented explicitly as such in the file header — not a
+  second source of truth for production. **Found and fixed a real encapsulation bug while
+  writing its tests**: early versions returned live references into internal arrays, so a caller
+  reading `.version` off a `Conversation` object it received earlier would silently see the
+  current (mutated) value instead of a snapshot — impossible for a real HTTP-backed client,
+  which only ever hands back freshly-parsed JSON. Fixed by cloning every value at every public
+  method's return boundary (`structuredClone`), while internal helpers still read/write the live
+  arrays directly (the fix is at the boundary, not throughout the internal logic).
+- (Phase E) `src/lib/crm/factory.ts` — `getCrmClient()` provider selection; refuses
+  `CRM_PROVIDER=mock` in production unless `ALLOW_UNSAFE_MOCKS_IN_PRODUCTION=true` is also
+  explicitly set (new env var, documented in `.env.example`).
+- (Phase E) `src/app/api/health/route.ts` and `src/app/api/health/crm/route.ts` — general and
+  CRM-specific health endpoints. **Verified for real**: started the actual Next.js dev server
+  and curled both endpoints (not just unit tests) — both returned correct JSON reflecting the
+  live `MockCrmClient` wiring end-to-end through the real Next.js runtime.
+- (Phase E) Tests: `tests/crm-signing.test.ts` (6 tests, the 3 shared vectors plus edge cases)
+  and `tests/mock-crm-client.test.ts` (13 tests mirroring the Apps Script Phase D coverage:
+  weekday/weekend rules, exact-closing-time boundary, double-booking prevention, idempotent
+  retry, idempotency-key conflict, any-barber tie-break, cancellation idempotency and slot
+  release, reschedule-preserves-original-on-failure, conversation version conflict, human
+  handoff persistence, webhook dedup, and two-customers-stay-isolated).
+- (Phase E) Full quality gate: `npm run lint` clean, `npm run typecheck` clean, `npm test` → 3
+  files, **24/24 passed**, `npm run build` succeeded, and the dev-server curl check above. Secret
+  grep clean. `git status` reviewed before commit.
+
 ## In-progress tasks
 
-None — Phases A, B, C, and D are complete as of this update. Phase E (Next.js CRM integration)
-has not been started.
+None — Phases A through E are complete as of this update. Phase F (secure public booking API for
+the separate website) has not been started.
 
 ## Remaining tasks
 
-Everything in Phases E–K — see the phase list in `PROJECT_PLAN.md`. Phase E specifically starts
-with: the `CrmClient` TypeScript interface, `lib/crm/signing.ts` (must match `Security.gs`
-byte-for-byte — verify against `API_CONTRACT.md`'s three shared test vectors before trusting
-it), `AppsScriptCrmClient`, and `MockCrmClient` (same business rules as the real Apps Script
-engine, so the whole booking flow is demonstrable with `CRM_PROVIDER=mock` and zero external
-credentials). Conversation/webhook-dedup/handoff Apps Script actions remain deliberately
-deferred to Phase H, per the note added to `API_CONTRACT.md` in this update.
+Everything in Phases F–K — see the phase list in `PROJECT_PLAN.md`. Phase F specifically starts
+with: `/api/public/*` routes (settings, services, barbers, availability, appointment create/
+cancel/reschedule), all going through the same `getCrmClient()` from Phase E, Zod-validated
+request/response, idempotency-key handling, CORS scoped to `PUBLIC_WEBSITE_ORIGIN`, rate
+limiting, and `WEBSITE_INTEGRATION.md` + `openapi.yaml` documenting the contract for whoever
+builds the separate website. Conversation/webhook-dedup/handoff Apps Script actions remain
+deliberately deferred to Phase H, per the note in `API_CONTRACT.md`.
 
 ## Blockers
 
-None credential-related yet — Phases E onward remain credential-independent until Phase K's
+None credential-related yet — Phases F onward remain credential-independent until Phase K's
 external configuration gate. The one real external step still pending since Phase B is an actual
 Apps Script deployment to confirm this session's mock-based verification holds up in the real
 environment — not a blocker to continuing, just an honestly-labeled gap (see
-`apps-script/README.md`). This matters more starting now than it did for B/C: Phase D's
-concurrency guarantee specifically relies on `LockService` behaving as documented, which no
-amount of single-threaded Node mocking can fully prove — flagging this explicitly rather than
-letting it quietly ride along as "already covered."
+`apps-script/README.md`). `AppsScriptCrmClient`'s signing/retry/error-mapping logic is now also
+in that same "verified in isolation, not yet proven against a live counterpart" category —
+`tests/crm-signing.test.ts` proves the two implementations *agree on the algorithm*, not that a
+real network round-trip between them works.
 
 ## Latest commit
 
-Phase D committed and pushed — see the session's final report for the exact hash (this file is
-updated in the same commit as Phase D's code, so `git log -1` in the repo is the authoritative
+Phase E committed and pushed — see the session's final report for the exact hash (this file is
+updated in the same commit as Phase E's code, so `git log -1` in the repo is the authoritative
 source if this line is ever stale).
 
 ## Tests last executed
 
-Post-Phase-D (this session): Next.js side unchanged and re-verified — `npm run lint` clean,
-`npm run typecheck` clean, `npm test` → 2 files, 8/8 passed, `npm run build` succeeded. Apps
-Script side: all `.gs` files pass `node --check`; the full booking engine plus everything from
-Phases B/C was executed against mocked Apps Script globals (now including `LockService`), and
-`runAllInternalTests()` was invoked end-to-end through that harness, reporting **17/17 passed**,
-including the double-booking race test by name. None of this was executed inside a real Apps
-Script project — see the detailed bullet above for exactly what is and isn't proven by that.
+Post-Phase-E (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 3
+files, **24/24 passed** (5 phone + 6 signing + 13 MockCrmClient), `npm run build` succeeded.
+Additionally verified live: ran `npm run dev` and curled `/api/health` and `/api/health/crm`
+against the real Next.js runtime — both returned correct JSON. Apps Script side unchanged since
+Phase D (17/17 via the mock harness, not re-run this phase since no `.gs` files changed).
 
 ## External configuration still required
 

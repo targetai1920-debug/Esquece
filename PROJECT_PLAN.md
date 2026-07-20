@@ -9,9 +9,13 @@ from the client.
 
 ## Guardrails for every phase
 
+- **The public website is a separate project**, built outside this repository. This repo builds
+  the secure API it consumes (Phase F), the WhatsApp agent, and the admin dashboard — not the
+  final website's pages, branding, or design. The existing `/` and `/reservar` pages are minimal
+  dev/test scaffolding, not the production site — don't invest design time in them.
 - The **CRM client** (`lib/crm`, `CrmClient` interface) is the one and only place any interface
-  talks to the CRM. Website, WhatsApp, and admin all go through it — no phase may add
-  interface-specific booking/CRM logic as a shortcut.
+  talks to the CRM. The public API (consumed by the separate website), WhatsApp, and admin all
+  go through it — no phase may add interface-specific booking/CRM logic as a shortcut.
 - Availability/booking rules are enforced inside Apps Script (`ARCHITECTURE.md` §5), not
   re-implemented in Next.js. Next.js re-checks are a UX nicety, not the guarantee.
 - No invented business data. Services, prices, barbers, schedules are either real (once
@@ -33,7 +37,7 @@ from the client.
 | C | Apps Script CRM domain: services, barbers, customers, working hours, breaks, time off, blocks, FAQs, promotions, API actions |
 | D | Apps Script booking engine: availability, script-lock concurrency, atomic appointment creation, idempotency, cancellation, reschedule, management token, audit, notifications |
 | E | Next.js CRM integration: `CrmClient` interface, `AppsScriptCrmClient`, `MockCrmClient`, request signing client-side, validation, error mapping |
-| F | Public website: full booking flow, booking confirmation, management page, cancellation/reschedule, accessibility |
+| F | **Secure public booking API** for the separate website (built elsewhere — not in this repo), covering business data, availability, appointment creation/cancel/reschedule, management tokens, CORS, idempotency, rate limiting; `WEBSITE_INTEGRATION.md` + `openapi.yaml`; a minimal non-production dev/test page only |
 | G | Admin dashboard: auth, dashboard, appointments, customers, services, barbers, schedules, conversations/handoffs, notifications |
 | H | WhatsApp infrastructure: Meta webhook, HMAC, payload parser, Cloud API client, dedup, conversation persistence |
 | I | Claude conversational agent: AI provider, structured output, state machine wiring, booking/cancel/reschedule flows, FAQ, handoff |
