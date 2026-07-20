@@ -2,40 +2,33 @@
 
 Booking-and-availability platform for **Esquece Barber Studio** (Cochabamba, Bolivia), built by
 TargetAI. One shared booking engine, three interfaces: public website, WhatsApp agent, admin
-dashboard. See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the design and
-[`PROJECT_PLAN.md`](./PROJECT_PLAN.md) for phase status.
+dashboard — all backed by a Google Sheets CRM reached through Google Apps Script. See
+[`ARCHITECTURE.md`](./ARCHITECTURE.md) for the design and
+[`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md) for current build status.
 
 ## Stack
 
-Next.js (TypeScript, App Router) · PostgreSQL · Prisma · Tailwind CSS · Zod · WhatsApp Cloud API
-· Anthropic Claude API.
+Next.js (TypeScript, App Router) · Google Apps Script + Google Sheets (CRM) · Tailwind CSS ·
+Zod · WhatsApp Cloud API · Anthropic Claude API.
 
 ## Status
 
-Phase 1 (project foundation) in progress. No booking flow, no WhatsApp integration, no admin
-auth yet — see `PROJECT_PLAN.md` for what's implemented vs. stubbed.
+See [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md) for the authoritative, per-phase
+status — it's updated at the end of every phase and is more current than this paragraph.
 
 ## Local setup
 
 ```bash
 npm install
 cp .env.example .env      # fill in local values; never commit .env
-npx prisma generate
-npx prisma migrate dev    # requires a running PostgreSQL instance, see below
 npm run dev
 ```
 
-### Database
-
-Needs a real PostgreSQL instance (the availability engine relies on a Postgres-only exclusion
-constraint — see `ARCHITECTURE.md` §5 — so SQLite is not an option, even locally). Easiest local
-option is Docker:
-
-```bash
-docker run --name esquece-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=esquece -p 5432:5432 -d postgres:16
-```
-
-Then set `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/esquece` in `.env`.
+No database to provision locally: with `CRM_PROVIDER=mock` (the `.env.example` default), the
+app runs entirely against an in-memory mock CRM that enforces the same business rules as the
+real Apps Script backend (`ARCHITECTURE.md` §2, `MockCrmClient`) — the full booking flow is
+demonstrable with zero external credentials. Switch to `CRM_PROVIDER=appscript` once a real
+Apps Script deployment exists (see `APPS_SCRIPT_SETUP.md`).
 
 ## Scripts
 
@@ -44,22 +37,29 @@ Then set `DATABASE_URL=postgresql://postgres:postgres@localhost:5432/esquece` in
 - `npm run lint` — ESLint.
 - `npm run typecheck` — `tsc --noEmit` (strict mode).
 - `npm test` — Vitest.
-- `npx prisma format` / `npx prisma validate` — schema checks.
-- `npx prisma migrate dev` — apply migrations locally.
 
 ## Project docs
 
-- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — system design, data model, booking engine, WhatsApp
-  agent design at the architecture level.
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — system design: Next.js → CRM client → Apps Script →
+  Sheets, booking engine, WhatsApp agent design at the architecture level.
 - [`BOOKING_RULES.md`](./BOOKING_RULES.md) — the concrete availability/booking rules the engine
   implements.
 - [`WHATSAPP_AGENT_DESIGN.md`](./WHATSAPP_AGENT_DESIGN.md) — webhook, dedup, conversation state
   machine, human handoff, at implementation level.
-- [`SECURITY.md`](./SECURITY.md) — security requirements and how they're enforced.
-- [`PROJECT_PLAN.md`](./PROJECT_PLAN.md) — phased plan and current status.
+- [`SECURITY.md`](./SECURITY.md) — security requirements and how they're enforced, including CRM
+  request signing.
+- [`MIGRATION_TO_POSTGRESQL.md`](./MIGRATION_TO_POSTGRESQL.md) — documented (not scheduled)
+  future path if Sheets/Apps Script capacity is ever exceeded.
+- [`PROJECT_PLAN.md`](./PROJECT_PLAN.md) — phased plan.
+- [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md) — current, living build status.
 - [`CLIENT_INFORMATION_REQUIRED.md`](./CLIENT_INFORMATION_REQUIRED.md) — real business data
   still needed from the client; everything else in the codebase is demo data, clearly marked
   `DEMO_DATA_REPLACE_BEFORE_PRODUCTION`.
+
+Additional docs (`CRM_APPS_SCRIPT.md`, `CRM_SCHEMA.md`, `API_CONTRACT.md`,
+`APPS_SCRIPT_SETUP.md`, `META_SETUP.md`, `ANTHROPIC_SETUP.md`, `RENDER_SETUP.md`,
+`DEPLOYMENT.md`, `TESTING.md`, `OPERATIONS.md`, `LIMITATIONS.md`) are added as the phases that
+produce their content land — see `IMPLEMENTATION_STATUS.md` for which exist yet.
 
 ## Environment variables
 

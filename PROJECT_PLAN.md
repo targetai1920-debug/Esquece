@@ -1,103 +1,56 @@
 # PROJECT_PLAN.md — Esquece Barber Studio
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the technical design this plan implements, and
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the technical design,
+[`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md) for the current, authoritative,
+per-phase status (more current than this file — update that one at the end of every phase, this
+one only when phase scope itself changes), and
 [`CLIENT_INFORMATION_REQUIRED.md`](./CLIENT_INFORMATION_REQUIRED.md) for what's still needed
-from the client before real (non-demo) data can go in.
-
-## Current status
-
-**Phase 0 (analysis) and the architecture-adaptation step are done.** Repository was created
-empty; no code exists yet. This document, `ARCHITECTURE.md`, and
-`CLIENT_INFORMATION_REQUIRED.md` are the first artifacts. Next step is Phase 1 (project
-scaffold) — not started.
+from the client.
 
 ## Guardrails for every phase
 
-- The **booking-and-availability engine** (`lib/booking-engine`) is the one and only place
-  availability/duration/conflict logic lives. Website, WhatsApp, and admin all call it — no
-  phase may add interface-specific booking logic as a shortcut.
+- The **CRM client** (`lib/crm`, `CrmClient` interface) is the one and only place any interface
+  talks to the CRM. Website, WhatsApp, and admin all go through it — no phase may add
+  interface-specific booking/CRM logic as a shortcut.
+- Availability/booking rules are enforced inside Apps Script (`ARCHITECTURE.md` §5), not
+  re-implemented in Next.js. Next.js re-checks are a UX nicety, not the guarantee.
 - No invented business data. Services, prices, barbers, schedules are either real (once
-  supplied by the client) or clearly marked `DEMO_DATA_REPLACE_BEFORE_PRODUCTION`.
-- Payments, loyalty, commissions, marketing campaigns, waitlists, and advanced analytics are
-  out of scope until explicitly requested after the MVP ships.
+  supplied by the client) or clearly marked `DEMO_DATA_REPLACE_BEFORE_PRODUCTION` /
+  `demo` flags in the CRM.
 - Claude never has direct write authority over price, service existence, duration, or
-  appointment creation/cancellation — see `ARCHITECTURE.md` §7.
+  appointment creation/cancellation — see `ARCHITECTURE.md` §7 and the master spec §45.
+- Every provider (CRM, AI, WhatsApp) has a mock implementation so the system is demonstrable
+  end-to-end without any external credentials — see `ARCHITECTURE.md` §2.
+- Payments, loyalty, commissions, marketing campaigns, waitlists, and advanced analytics are
+  out of scope until explicitly requested after this build ships.
 
-## Phase 0 — Analysis (done)
+## Phases
 
-- [x] Confirm repository is new/empty.
-- [x] Adapt the general booking-system brief into an Esquece-specific architecture.
-- [x] Write `PROJECT_PLAN.md`, `ARCHITECTURE.md`, `CLIENT_INFORMATION_REQUIRED.md`.
+| Phase | Description |
+|---|---|
+| A | Architecture migration: Prisma/Postgres → Apps Script CRM, docs updated, dead code removed |
+| B | Apps Script CRM foundation: project structure, sheet setup, custom menu, request signing, health API, demo seed, internal tests |
+| C | Apps Script CRM domain: services, barbers, customers, working hours, breaks, time off, blocks, FAQs, promotions, API actions |
+| D | Apps Script booking engine: availability, script-lock concurrency, atomic appointment creation, idempotency, cancellation, reschedule, management token, audit, notifications |
+| E | Next.js CRM integration: `CrmClient` interface, `AppsScriptCrmClient`, `MockCrmClient`, request signing client-side, validation, error mapping |
+| F | Public website: full booking flow, booking confirmation, management page, cancellation/reschedule, accessibility |
+| G | Admin dashboard: auth, dashboard, appointments, customers, services, barbers, schedules, conversations/handoffs, notifications |
+| H | WhatsApp infrastructure: Meta webhook, HMAC, payload parser, Cloud API client, dedup, conversation persistence |
+| I | Claude conversational agent: AI provider, structured output, state machine wiring, booking/cancel/reschedule flows, FAQ, handoff |
+| J | Notifications and Calendar: notification processor, WhatsApp templates, reminders, optional Google Calendar sync, retries |
+| K | Production hardening: rate limiting, safe logging, health endpoints, env validation, security review, dependency review, deployment docs, full quality gate |
 
-## Phase 1 — Project foundation (next)
+Detailed task breakdown for each phase lives in the master implementation spec (delivered by the
+user, not duplicated here to avoid drift) and is tracked task-by-task in
+`IMPLEMENTATION_STATUS.md` as work happens.
 
-- [ ] Initialize Next.js (TypeScript, App Router).
-- [ ] Configure PostgreSQL connection + Prisma.
-- [ ] Create the folder structure proposed in `ARCHITECTURE.md` §3.
-- [ ] Configure environment variables (`.env.example`).
-- [ ] Add linting/formatting (ESLint, Prettier) and a test runner (Vitest or Jest — decided at
-      implementation time).
-- [ ] `README.md` with local setup instructions.
-
-## Phase 2 — Booking domain
-
-- [ ] Prisma schema for all entities in `ARCHITECTURE.md` §4.
-- [ ] Initial migration, including the hand-written `EXCLUDE` constraint migration (§5).
-- [ ] Implement `getAvailableSlots`.
-- [ ] Implement `createAppointment` (transactional, re-validated, race-safe).
-- [ ] Implement `cancelAppointment`, `rescheduleAppointment`.
-- [ ] Tests: duration handling, breaks, time off, blocks, overlapping appointments, and the
-      two-simultaneous-customers race test required by the brief (only one of two concurrent
-      requests for the same barber/slot may succeed).
-
-## Phase 3 — Public booking website
-
-- [ ] Mobile-first step flow: service → barber → date → time → customer details → summary →
-      confirmation, per `ARCHITECTURE.md` §6.
-- [ ] Wire each step to real availability/services/barbers from the DB via the booking engine.
-- [ ] Loading/error states, including "slot just got taken" recovery (re-query and re-offer).
-- [ ] Visual identity: black/white/grey, configurable electric accent color, crowned-smile logo
-      placeholder until brand assets arrive (see `CLIENT_INFORMATION_REQUIRED.md`).
-
-## Phase 4 — Admin dashboard
-
-- [ ] Authentication for admin routes.
-- [ ] Agenda views (day/week/month), filter by barber/status.
-- [ ] Manual appointment create/edit/cancel/reschedule/complete/no-show, all through the booking
-      engine.
-- [ ] Services, barbers, schedules, breaks, time off, blocked slots CRUD.
-- [ ] Customers view (history, cancellations, notes).
-- [ ] Conversations view (handoffs, reason, bot on/off, reactivate).
-- [ ] Business configuration (address, hours, cancellation policy, min lead time, max advance
-      days, buffer, reminder timing).
-
-## Phase 5 — WhatsApp agent
-
-- [ ] Webhook: verification (`GET`), signature-verified inbound handling (`POST`).
-- [ ] Message dedup via Meta's external message id.
-- [ ] Conversation state machine persisted in `Conversation` (`ARCHITECTURE.md` §7).
-- [ ] Claude integration with the structured-output contract + validation.
-- [ ] Booking, cancellation, reschedule flows via the shared booking engine.
-- [ ] Human handoff (trigger detection, silence automated replies, staff alert, manual
-      reactivation only).
-
-## Phase 6 — Automations
-
-- [ ] Booking confirmations (all sources).
-- [ ] Reminders before appointment (idempotent).
-- [ ] Modification/cancellation notices.
-- [ ] Internal alerts for new bookings and handoffs.
-
-## Phase 7 — Production readiness
-
-- [ ] Security review (secrets, auth, rate limiting, input validation, audit logging).
-- [ ] Full test suite green.
-- [ ] Confirm hosting/DB provider (pending decision, `ARCHITECTURE.md` §2) and deploy.
-- [ ] Load real (non-demo) business data once received from the client.
-- [ ] Webhook verification against the real Meta app.
-- [ ] Real booking test end-to-end on all three interfaces.
-
-## Explicitly deferred (not this MVP)
+## Explicitly deferred (not this build)
 
 Payments/deposits, loyalty/fidelización, commissions, marketing campaigns, automated review
 requests, waitlists, advanced analytics.
+
+## Superseded history
+
+The original plan (Phases 0–7, PostgreSQL/Prisma-based) is preserved in git history at commit
+`66bee17` and earlier — not deleted, just superseded. See `ARCHITECTURE.md`'s header note and
+`MIGRATION_TO_POSTGRESQL.md` for how that work relates to the current design.

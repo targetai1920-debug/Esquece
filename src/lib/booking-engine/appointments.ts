@@ -14,11 +14,12 @@ import type {
 } from "./types";
 
 /**
- * The only sanctioned way to create an appointment. Must run inside a
- * database transaction, re-validate the slot from scratch (BOOKING_RULES.md
- * #3), and rely on the Postgres EXCLUDE constraint (ARCHITECTURE.md #5) —
- * not just the application-level check — as the actual anti-double-booking
- * guarantee. No caller may call `prisma.appointment.create` directly.
+ * The only sanctioned way to create an appointment. Delegates to the CRM
+ * client (`CrmClient.createAppointment`, Phase E), which calls the Apps
+ * Script `createAppointment` action — that action re-validates the slot
+ * from scratch under `LockService.getScriptLock()` (BOOKING_RULES.md #3,
+ * ARCHITECTURE.md #5) as the actual anti-double-booking guarantee. No
+ * caller may call the CRM client's appointment sheet directly.
  *
  * STUB — not implemented. Always throws.
  */

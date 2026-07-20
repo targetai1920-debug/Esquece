@@ -1,14 +1,23 @@
-import type { AppointmentSource, AppointmentStatus } from "@prisma/client";
-
 /**
- * Shared types for the booking-and-availability engine.
+ * Shared, storage-independent types for the booking-and-availability engine.
  * See ARCHITECTURE.md #5 and BOOKING_RULES.md for the rules these types support.
  *
- * NOTHING in this module talks to the database yet — these are the contracts
- * the Phase 2 implementation (see PROJECT_PLAN.md) will fulfill. Website,
- * WhatsApp handler, and admin dashboard are all meant to call these same
- * functions; none of them may reimplement availability logic on their own.
+ * These types intentionally do not import from any database client. The
+ * source of truth is the Google Apps Script CRM (see ARCHITECTURE.md #2-3),
+ * reached through the CrmClient interface — not a local ORM. Website,
+ * WhatsApp handler, and admin dashboard are all meant to call the same
+ * functions built on top of these types; none of them may reimplement
+ * availability logic on their own.
  */
+
+export type AppointmentSource = "WEBSITE" | "WHATSAPP" | "ADMIN";
+
+export type AppointmentStatus =
+  | "PENDING"
+  | "CONFIRMED"
+  | "COMPLETED"
+  | "CANCELLED"
+  | "NO_SHOW";
 
 export type BarberSelector = { barberId: string } | { anyAvailable: true };
 
