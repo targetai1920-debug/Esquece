@@ -22,12 +22,17 @@ What each file in `apps-script/` does. See `CRM_SCHEMA.md` for the sheet schema 
 | `Seed.gs` | `seedDemoData()`/`removeDemoData()` — clearly-marked, reversible demo rows for services/barbers/barber-services/working-hours. |
 | `DateTime.gs` | Local-date/time validation, weekday calculation, minute-interval math, overlap check, UTC↔local conversion, Spanish date formatting. All business-timezone-aware — no browser-locale or server-default-timezone assumptions. |
 | `Ids.gs` | UUID/reference/nonce generation, management-token generation and hashing. |
-| `Tests.gs` | `runAllInternalTests()` — non-destructive tests for setup idempotency, request signing, and system actions (this phase's scope; booking-rule tests land in Phase D alongside the code they test). |
+| `Validation.gs` | Generic payload validators (`requireString_`, `requirePhoneE164_`, `requireLocalDate_`, etc.) — each action handler validates its own payload independently of the envelope-level checks. |
+| `Repositories.gs` | Generic, sheet-agnostic CRUD helpers (`findRowById_`, `findRowsWhere_`, `insertRow_`, `updateRowById_`, `generateEntityId_`) built on `Sheets.gs`'s batch primitives. |
+| `Settings.gs` | `SETTINGS` sheet access, `getSettingsMap_`/`getSettingValue_` (typed, cached-per-call), `getBusinessSettings` action. |
+| `Services.gs` | `SERVICES` sheet access, `listServices`/`getService` actions, `requireActiveService_`. |
+| `Barbers.gs` | `BARBERS`/`BARBER_SERVICES` sheet access, `listBarbers`/`getBarber`/`listBarbersForService` actions, `requireActiveBarber_`, `requireBarberEligibleForService_` (BOOKING_RULES.md §1.1). |
+| `Customers.gs` | `CUSTOMERS` sheet access, phone-deduped `upsertCustomer`, `findCustomerByPhone`/`getCustomer`/`listCustomers`/`getCustomerHistory` actions, `recalculateCustomerCounters()` repair tool. |
+| `Content.gs` | `FAQS`/`PROMOTIONS` read actions — `listPromotions` already filters to currently-valid ones (`ARCHITECTURE.md` §7: Claude must never mention an inactive/expired promotion). |
+| `Tests.gs` | `runAllInternalTests()` — non-destructive tests: setup idempotency, request signing, system actions (Phase B), domain reads against seeded-then-removed demo data, and customer upsert dedup (Phase C). Booking-rule tests land in Phase D alongside the code they test. |
 
 ## Not yet present (later phases)
 
-- `Validation.gs`, `Repositories.gs`, `Settings.gs`, `Services.gs`, `Barbers.gs`,
-  `Customers.gs` — CRM domain (Phase C).
 - `Availability.gs`, `Appointments.gs` — booking engine, locking, atomic creation (Phase D).
 - `Conversations.gs`, `Messages.gs`, `Handoffs.gs` — conversation/handoff persistence actions
   (Phase D, consumed by Phase H/I).

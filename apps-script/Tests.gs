@@ -152,6 +152,54 @@ var INTERNAL_TESTS_ = [
       }
     },
   },
+  {
+    name: "domain reads work against seeded demo data, then clean up after themselves",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      try {
+        var services = actionListServices_().services;
+        if (services.length < 1) throw new Error("expected at least one demo service");
+
+        var barbersForService = actionListBarbersForService_({ serviceId: services[0].serviceId }).barbers;
+        if (barbersForService.length < 1) throw new Error("expected at least one eligible demo barber");
+
+        assertThrowsCode_(function () {
+          requireBarberEligibleForService_(barbersForService[0].barberId, "not-a-real-service-id");
+        }, ERROR_CODES.BARBER_NOT_ELIGIBLE, "ineligible barber/service pair");
+      } finally {
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "upsertCustomer dedupes by phone and never erases fields with a blank",
+    run: function () {
+      var testPhone = "59100000000"; // clearly-fake test number, not a real contact
+      var testSheet = getCustomersSheet_();
+      var before = findCustomerByPhoneRaw_(testPhone);
+      if (before) {
+        // Clean slate if a previous failed run left this behind.
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) {
+          return row.phoneE164 === testPhone;
+        });
+      }
+      try {
+        var created = actionUpsertCustomer_({ phoneE164: testPhone, name: "Prueba Interna" }).customer;
+        var updated = actionUpsertCustomer_({ phoneE164: testPhone, email: "prueba@example.com" }).customer;
+        if (updated.customerId !== created.customerId) {
+          throw new Error("second upsert created a new customer instead of updating the existing one");
+        }
+        if (updated.name !== "Prueba Interna") {
+          throw new Error("second upsert erased the name field instead of preserving it");
+        }
+      } finally {
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) {
+          return row.phoneE164 === testPhone;
+        });
+      }
+    },
+  },
 ];
 
 /**

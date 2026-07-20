@@ -4,18 +4,18 @@ Google Apps Script source for the Esquece CRM API. See `../CRM_APPS_SCRIPT.md` f
 file does, `../CRM_SCHEMA.md` for the sheet schema, `../API_CONTRACT.md` for the request/
 response contract, and `../APPS_SCRIPT_SETUP.md` for exact deployment steps.
 
-## Status (Phase B)
+## Status (Phases B–C)
 
 Implemented: project structure, sheet setup (`setupCRM()`), custom spreadsheet menu, request
-signing (`Security.gs`), standard response envelope, health/version/validate-structure actions,
-demo seed/remove, internal test runner covering this phase's scope (setup idempotency, request
-signing, health).
+signing (`Security.gs`), standard response envelope, system actions
+(health/version/validate-structure), demo seed/remove, CRM domain reads (settings, services,
+barbers, barber-service eligibility, customers with phone-deduped upsert, FAQs, promotions), and
+an internal test runner covering all of that.
 
-Not yet implemented: the actual CRM domain (services/barbers/customers/etc. — Phase C) and
-booking engine (availability/locks/atomic create — Phase D) beyond the sheet schema already
-defined in `Sheets.gs`. `ACTION_HANDLERS_` in `Router.gs` currently only has `health`,
-`getApiVersion`, and `validateCrmStructure` — everything else in the master spec's action list
-is added by later phases via `registerAction_`.
+Not yet implemented: the booking engine (availability computation, `LockService`-based atomic
+appointment creation, cancellation, reschedule — Phase D), conversation/webhook-dedup/handoff
+persistence actions (Phase D, consumed by Phase H/I), notifications and Calendar sync
+(Phase J). See `API_CONTRACT.md`'s action table for exactly which actions exist right now.
 
 **Not deployed.** This source has not been pushed to a live Apps Script project or executed
 against a real Google Sheet — see `IMPLEMENTATION_STATUS.md` for what's verified vs. pending

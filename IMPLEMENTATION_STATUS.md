@@ -29,7 +29,7 @@ future path if Sheets/Apps Script capacity is ever exceeded.
 |---|---|---|
 | A | Architecture migration (Prisma → Apps Script CRM) | DONE |
 | B | Apps Script CRM foundation | DONE |
-| C | Apps Script CRM domain (services/barbers/customers/etc.) | NOT STARTED |
+| C | Apps Script CRM domain (services/barbers/customers/etc.) | DONE |
 | D | Apps Script booking engine (availability, locks, atomic create) | NOT STARTED |
 | E | Next.js CRM integration (CrmClient, AppsScriptCrmClient, MockCrmClient) | NOT STARTED |
 | F | Public website (full booking flow, management page) | NOT STARTED |
@@ -120,40 +120,98 @@ future path if Sheets/Apps Script capacity is ever exceeded.
   **not the same as a real Apps Script deployment**, which has its own quota/permission/parsing
   quirks that can only be confirmed by actually deploying (see `APPS_SCRIPT_SETUP.md`).
 
+- (Phase C) `Validation.gs`: generic payload validators (`requireString_`, `requirePhoneE164_`,
+  `requireLocalDate_`/`requireLocalTime_`, `requireOneOf_`, etc.), each throwing `ApiError`
+  (`INVALID_PAYLOAD`) with a specific field name.
+- (Phase C) `Repositories.gs`: generic, sheet-agnostic CRUD (`findRowById_`, `findRowsWhere_`,
+  `insertRow_` with automatic `createdAt`/`updatedAt` stamping, `updateRowById_` with patch-merge
+  semantics, `generateEntityId_`).
+- (Phase C) `Settings.gs`: `getSettingsMap_`/`getSettingValue_` (typed coercion by the
+  `SETTINGS` sheet's `type` column — string/number/boolean), `getBusinessSettings` action.
+- (Phase C) `Services.gs`: `listServices`/`getService` actions, `requireActiveService_`
+  (throws `SERVICE_NOT_FOUND`/`SERVICE_INACTIVE` correctly).
+- (Phase C) `Barbers.gs`: `listBarbers`/`getBarber`/`listBarbersForService` actions,
+  `requireActiveBarber_`, `requireBarberEligibleForService_` (BOOKING_RULES.md §1.1 — a barber
+  not linked to a service is never offered for it).
+- (Phase C) `Customers.gs`: `findCustomerByPhone`/`upsertCustomer`/`getCustomer`/
+  `listCustomers`/`getCustomerHistory` actions. `upsertCustomer` dedupes strictly by normalized
+  phone and never lets a partial update (e.g. WhatsApp only ever sending a name) erase a field
+  populated from another source (e.g. an email captured on the website) — verified explicitly.
+  `recalculateCustomerCounters()` repair tool included, not run automatically.
+- (Phase C) `Content.gs`: `listFaqs`/`listPromotions` actions — promotions are pre-filtered to
+  currently-valid ones (`ARCHITECTURE.md` §7's "never mention an inactive promotion" rule is
+  enforced by the data the action returns, not left to the caller to re-check).
+- (Phase C) `Router.gs` **redesigned mid-phase**: discovered that the originally-planned
+  `registerAction_` cross-file pattern (each domain file calling `registerAction_` from its own
+  top-level scope) is an ordering hazard in Apps Script — function *declarations* hoist across
+  all concatenated files regardless of order, but top-level *statements* execute in file order
+  (alphabetical by default), so e.g. `Barbers.gs` could run its registration before `Router.gs`
+  finishes initializing `ACTION_HANDLERS_`. Fixed by keeping every action listed directly in
+  `Router.gs`'s one object literal instead (safe, since it only references hoisted function
+  names) — documented in a comment at the top of the file so the reasoning isn't lost later.
+- (Phase C) Extended `Tests.gs`: two new non-destructive tests — domain reads against
+  seeded-then-removed demo data, and the customer-upsert dedup/non-erasure guarantee (creates a
+  clearly-fake test phone number, cleans it up in a `finally` block either way).
+- (Phase C) Updated `API_CONTRACT.md`'s action table (16 actions now implemented),
+  `CRM_APPS_SCRIPT.md`'s file table, `apps-script/README.md`'s status section.
+- (Phase C) **Verification, same honest standard as Phase B**: not deployed to a live Apps
+  Script project. All new `.gs` files pass `node --check`. Logic was executed in Node against
+  the same mocked-globals harness (now also mocking `CacheService` and `Utilities.getUuid`/
+  `computeDigest`/`base64EncodeWebSafe`), confirming: `listServices`/`getService` correctly
+  filter/error on inactive-or-missing; `listBarbersForService` correctly intersects
+  `BARBER_SERVICES`; `requireBarberEligibleForService_` rejects a real barber against a
+  fabricated service id; `upsertCustomer` dedupes and never erases; `getBusinessSettings`
+  coerces string/number/boolean correctly per the `type` column; `getCustomerHistory` correctly
+  returns an empty appointment list (Phase D hasn't created any yet, and it doesn't need to for
+  this action to be correct); and `runAllInternalTests()` itself — the actual function a human
+  would run in the Apps Script editor — reports **15/15 passed** when executed end-to-end
+  through this harness. One test failure surfaced during this process
+  (`CacheService.getScriptCache()` in my *test mock* was recreating an empty store on every
+  call instead of returning a persistent one) — traced to the mock, not `Security.gs` itself
+  (the identical nonce-reuse check already passed in Phase B's verification with a correctly
+  persistent mock), and fixed in the test harness, not the source.
+
 ## In-progress tasks
 
-None — Phases A and B are complete as of this update. Phase C (Apps Script CRM domain) has not
-been started.
+None — Phases A, B, and C are complete as of this update. Phase D (Apps Script booking engine)
+has not been started.
 
 ## Remaining tasks
 
-Everything in Phases C–K — see the phase list in `PROJECT_PLAN.md`. Phase C specifically starts
-with: services/barbers/customers/working-hours/breaks/time-off/blocks/FAQs/promotions CRUD
-actions registered onto the same `Router.gs` via `registerAction_`, extending `API_CONTRACT.md`'s
-action table as each lands.
+Everything in Phases D–K — see the phase list in `PROJECT_PLAN.md`. Phase D specifically starts
+with: `Availability.gs` (the actual `getAvailability`/`validateSlot` nine-point check from
+BOOKING_RULES.md §1, reading `WORKING_HOURS`/`BREAKS`/`TIME_OFF`/`BLOCKED_SLOTS`/`APPOINTMENTS`)
+and `Appointments.gs` (`createAppointment`/`cancelAppointment`/`rescheduleAppointment` under
+`LockService.getScriptLock()`, idempotency-key handling, management-token issuance, audit
+entries) — plus `Conversations.gs`/`Messages.gs`/`Handoffs.gs` for the conversation/dedup/
+handoff actions Phase H/I will call. This is the largest and most correctness-critical remaining
+phase; expect it to need the same execute-don't-just-read verification discipline as B/C, scaled
+up (especially the concurrent-booking race behavior, which is hard to prove without a real Apps
+Script deployment — see the honesty note this file will carry once that phase lands).
 
 ## Blockers
 
-None credential-related yet — Phases C onward remain credential-independent (mocks/local Apps
-Script source, verified the same way Phase B was) until Phase K's external configuration gate.
-The one real external step still pending from Phase B specifically is an actual Apps Script
-deployment to confirm this session's mock-based verification holds up in the real environment —
-not a blocker to continuing Phase C, just an honestly-labeled gap (see `apps-script/README.md`).
+None credential-related yet — Phases D onward remain credential-independent (mocks/local Apps
+Script source, verified the same way B/C were) until Phase K's external configuration gate. The
+one real external step still pending since Phase B is an actual Apps Script deployment to
+confirm this session's mock-based verification holds up in the real environment — not a blocker
+to continuing, just an honestly-labeled gap (see `apps-script/README.md`).
 
 ## Latest commit
 
-Phase B committed and pushed — see the session's final report for the exact hash (this file is
-updated in the same commit as Phase B's code, so `git log -1` in the repo is the authoritative
+Phase C committed and pushed — see the session's final report for the exact hash (this file is
+updated in the same commit as Phase C's code, so `git log -1` in the repo is the authoritative
 source if this line is ever stale).
 
 ## Tests last executed
 
-Post-Phase-B (this session): Next.js side unchanged and re-verified — `npm run lint` clean,
+Post-Phase-C (this session): Next.js side unchanged and re-verified — `npm run lint` clean,
 `npm run typecheck` clean, `npm test` → 2 files, 8/8 passed, `npm run build` succeeded. Apps
-Script side: all `.gs` files pass `node --check` syntax validation; `Security.gs`,
-`Response.gs`, `Router.gs`, `DateTime.gs`, `Sheets.gs`, `Setup.gs`, `Seed.gs` logic executed and
-verified against mocked Apps Script globals (see the detailed bullet above) — not executed
-inside a real Apps Script project.
+Script side: all `.gs` files pass `node --check`; the full domain (Settings/Services/Barbers/
+Customers/Content) plus everything from Phase B was executed against mocked Apps Script globals,
+and `runAllInternalTests()` itself was invoked through that harness end-to-end, reporting
+**15/15 passed**. None of this was executed inside a real Apps Script project — see the detailed
+bullet above for exactly what is and isn't proven by that.
 
 ## External configuration still required
 

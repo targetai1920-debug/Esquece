@@ -192,17 +192,31 @@ Defined in `apps-script/Errors.gs`: `UNAUTHORIZED`, `INVALID_SIGNATURE`, `REQUES
 itself is stable and machine-readable; the message in the response is a reasonable default, not
 necessarily the final customer-facing copy.
 
-## Actions implemented so far (Phase B)
+## Actions implemented so far (Phases B–C)
 
 | Action | Status |
 |---|---|
-| `health` | Implemented |
-| `getApiVersion` | Implemented |
-| `validateCrmStructure` | Implemented |
+| `health` | Implemented (Phase B) |
+| `getApiVersion` | Implemented (Phase B) |
+| `validateCrmStructure` | Implemented (Phase B) |
+| `getBusinessSettings` | Implemented (Phase C) |
+| `listServices` | Implemented (Phase C) |
+| `getService` | Implemented (Phase C) |
+| `listBarbers` | Implemented (Phase C) |
+| `getBarber` | Implemented (Phase C) |
+| `listBarbersForService` | Implemented (Phase C) |
+| `listFaqs` | Implemented (Phase C) |
+| `listPromotions` | Implemented (Phase C) |
+| `findCustomerByPhone` | Implemented (Phase C) |
+| `upsertCustomer` | Implemented (Phase C) |
+| `getCustomer` | Implemented (Phase C) |
+| `listCustomers` | Implemented (Phase C) |
+| `getCustomerHistory` | Implemented (Phase C) — reads `APPOINTMENTS` directly; correctly returns an empty list until Phase D creates rows there |
 
-Every other action in the master spec's action list (settings/services/barbers/availability/
-customers/appointments/conversations/webhook dedup/handoff/notifications/audit — ~35 actions in
-total) is **not yet implemented**; each is added to `apps-script/Router.gs`'s
-`ACTION_HANDLERS_` (via `registerAction_`) as Phases C–D–H–I–J land, and this table is updated in
-the same commit as the code that adds it — check `git log` on this file, or
+Every action in the master spec's action list for availability/appointments/conversations/
+webhook dedup/handoff/notifications/audit (~20 more actions) is **not yet implemented**; each is
+added to `apps-script/Router.gs`'s `ACTION_HANDLERS_` object literal directly (not via
+`registerAction_` from another file's top-level scope — see the comment at the top of
+`Router.gs` for why that would be an ordering hazard) as Phases D–H–I–J land, and this table is
+updated in the same commit as the code that adds it — check `git log` on this file, or
 `IMPLEMENTATION_STATUS.md`, for the current truth if this table is ever stale.
