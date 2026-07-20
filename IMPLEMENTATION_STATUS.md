@@ -28,7 +28,7 @@ future path if Sheets/Apps Script capacity is ever exceeded.
 | Phase | Description | Status |
 |---|---|---|
 | A | Architecture migration (Prisma → Apps Script CRM) | DONE |
-| B | Apps Script CRM foundation | NOT STARTED |
+| B | Apps Script CRM foundation | DONE |
 | C | Apps Script CRM domain (services/barbers/customers/etc.) | NOT STARTED |
 | D | Apps Script booking engine (availability, locks, atomic create) | NOT STARTED |
 | E | Next.js CRM integration (CrmClient, AppsScriptCrmClient, MockCrmClient) | NOT STARTED |
@@ -65,36 +65,95 @@ future path if Sheets/Apps Script capacity is ever exceeded.
   8/8 passed, `npm run build` succeeded (routes `/`, `/_not-found`, `/reservar` static). Secret
   grep clean. `git status` reviewed before commit.
 
+- (Phase B) Created the `apps-script/` project: `appsscript.json` (V8 runtime, `America/La_Paz`,
+  Web App config), `.clasp.json.example`, `.claspignore`.
+- (Phase B) `Errors.gs` (error codes + `ApiError`), `Response.gs` (success/error envelope
+  builders), `Config.gs` (Script Properties access), `Ids.gs` (UUID/reference/nonce/management-
+  token generation+hashing), `DateTime.gs` (local date/time validation, weekday math, interval
+  overlap, UTC↔local conversion, Spanish date formatting).
+- (Phase B) `Security.gs`: stable (recursively key-sorted) JSON serializer, canonical-string
+  builder, HMAC-SHA256 signing, constant-time comparison, full `verifySignedRequest_` (API key,
+  signature, timestamp freshness, nonce reuse via `CacheService`).
+- (Phase B) `Sheets.gs`: all 18 CRM sheet name/header definitions, `getOrCreateSheet_`
+  (idempotent, non-destructive), `ensureHeaders_`, batch `sheetToObjects_`/
+  `appendRowFromObject_`/`updateRowFromObject_`.
+- (Phase B) `Setup.gs`: `setupCRM()` (idempotent), default `SETTINGS` rows (matching
+  `BOOKING_RULES.md` §0), `validateCrmStructure()`, `showCrmVersion()`.
+- (Phase B) `Dashboard.gs`: generated `DASHBOARD` summary view.
+- (Phase B) `Menu.gs`: `onOpen()` custom "Esquece CRM" spreadsheet menu (all items from the
+  master spec's menu list — some deferred actions show an explanatory alert pointing to the
+  phase that implements them).
+- (Phase B) `Health.gs`: `health`/`getApiVersion`/`validateCrmStructure` action handlers.
+  `Router.gs`: `ACTION_HANDLERS_` dispatch table + `registerAction_`/`routeAction_`, currently
+  registering those three actions.
+- (Phase B) `Api.gs`: `doGet` (unauthenticated, no business data) / `doPost` (parses envelope,
+  verifies signature, dispatches via Router, returns standard envelope, never leaks a raw stack
+  trace).
+- (Phase B) `Seed.gs`: `seedDemoData()`/`removeDemoData()` — demo services/barbers/
+  barber-services/working-hours, all `demo`-flagged, removable without touching real rows.
+- (Phase B) `Tests.gs`: `runAllInternalTests()` covering this phase's scope — stable-stringify
+  correctness, constant-time comparison, valid/tampered/wrong-key/expired/replayed-nonce request
+  verification, unsupported-action rejection, health action, setup idempotency + structure
+  validation. Non-destructive (no sheet/row deletion in tests).
+- (Phase B) Wrote `CRM_APPS_SCRIPT.md` (file-by-file overview), `CRM_SCHEMA.md` (full
+  column-level schema for all 19 sheets), `API_CONTRACT.md` (envelope format, signing algorithm,
+  **3 verified shared test vectors** for the Phase E Next.js implementation to check itself
+  against), `APPS_SCRIPT_SETUP.md` (exact, credential-free-until-the-actual-secrets deployment
+  steps), `apps-script/README.md`.
+- (Phase B) **Verification method, stated honestly**: this Apps Script source has not been
+  deployed to a real Google Apps Script project (no live Google environment available in this
+  session). Instead, every `.gs` file was syntax-checked (`node --check`), and the actual logic
+  of `Security.gs`, `Response.gs`, `Router.gs`, `DateTime.gs`, `Sheets.gs`, `Setup.gs`, and
+  `Seed.gs` was executed in Node against mocked `SpreadsheetApp`/`PropertiesService`/`Utilities`/
+  `ContentService` globals (Apps Script's own file-concatenation/global-hoisting behavior
+  reproduced via a single combined `vm` context) — not just read for plausibility. This caught
+  and fixed one real bug (`Dashboard.gs` used `sheet.getParent()` inconsistently with the
+  `spreadsheet` parameter already in scope). All of the following passed: the three
+  `API_CONTRACT.md` signing vectors byte-for-byte; envelope success/error shape; tampered-
+  payload/wrong-key/replayed-nonce/expired-timestamp rejection; unsupported-action rejection;
+  `setupCRM()` creating all 18 data sheets with correct headers; running `setupCRM()` twice
+  produces no duplicate `SETTINGS` rows and does not overwrite a manually-edited value;
+  `validateCrmStructure()` correctly detects and (via `getOrCreateSheet_`) repairs a missing
+  column; `seedDemoData()`/`removeDemoData()` create/remove exactly the expected demo rows,
+  re-seeding doesn't duplicate, and removal never touches a real (non-demo) row planted in the
+  same sheet. This is real logic verification, not merely "the code compiles" — but it is still
+  **not the same as a real Apps Script deployment**, which has its own quota/permission/parsing
+  quirks that can only be confirmed by actually deploying (see `APPS_SCRIPT_SETUP.md`).
+
 ## In-progress tasks
 
-None — Phase A is complete as of this update. Phase B (Apps Script CRM foundation) has not been
-started.
+None — Phases A and B are complete as of this update. Phase C (Apps Script CRM domain) has not
+been started.
 
 ## Remaining tasks
 
-Everything in Phases B–K — see the phase list in `PROJECT_PLAN.md` for the detailed breakdown
-of each (this is a large, multi-session build; do not assume any phase after A is started
-unless this table says otherwise). Phase B specifically starts with: `apps-script/` project
-structure, `appsscript.json`, `Setup.gs`/`setupCRM()`, `Sheets.gs`, `Security.gs` (request
-signing + stable JSON serializer — must match a Next.js-side implementation to be written in
-Phase E), `Response.gs`, `Config.gs`, `Menu.gs`, `Health.gs`, `Seed.gs`, `Tests.gs`.
+Everything in Phases C–K — see the phase list in `PROJECT_PLAN.md`. Phase C specifically starts
+with: services/barbers/customers/working-hours/breaks/time-off/blocks/FAQs/promotions CRUD
+actions registered onto the same `Router.gs` via `registerAction_`, extending `API_CONTRACT.md`'s
+action table as each lands.
 
 ## Blockers
 
-None credential-related yet — Phases B onward are credential-independent (mocks/local Apps
-Script source) until Phase K's external configuration gate.
+None credential-related yet — Phases C onward remain credential-independent (mocks/local Apps
+Script source, verified the same way Phase B was) until Phase K's external configuration gate.
+The one real external step still pending from Phase B specifically is an actual Apps Script
+deployment to confirm this session's mock-based verification holds up in the real environment —
+not a blocker to continuing Phase C, just an honestly-labeled gap (see `apps-script/README.md`).
 
 ## Latest commit
 
-Phase A committed and pushed — see the session's final report for the exact hash (this file is
-updated in the same commit, so check `git log -1` in the repo for the authoritative value if
-this line is ever stale).
+Phase B committed and pushed — see the session's final report for the exact hash (this file is
+updated in the same commit as Phase B's code, so `git log -1` in the repo is the authoritative
+source if this line is ever stale).
 
 ## Tests last executed
 
-Post-Phase-A (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 2
-files, 8/8 tests passed, `npm run build` succeeded. No Prisma commands run (removed). No Apps
-Script tests yet — `Tests.gs`/`runAllInternalTests()` doesn't exist until Phase B.
+Post-Phase-B (this session): Next.js side unchanged and re-verified — `npm run lint` clean,
+`npm run typecheck` clean, `npm test` → 2 files, 8/8 passed, `npm run build` succeeded. Apps
+Script side: all `.gs` files pass `node --check` syntax validation; `Security.gs`,
+`Response.gs`, `Router.gs`, `DateTime.gs`, `Sheets.gs`, `Setup.gs`, `Seed.gs` logic executed and
+verified against mocked Apps Script globals (see the detailed bullet above) — not executed
+inside a real Apps Script project.
 
 ## External configuration still required
 

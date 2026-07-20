@@ -55,11 +55,15 @@ Apps Script deployment exists (see `APPS_SCRIPT_SETUP.md`).
 - [`CLIENT_INFORMATION_REQUIRED.md`](./CLIENT_INFORMATION_REQUIRED.md) — real business data
   still needed from the client; everything else in the codebase is demo data, clearly marked
   `DEMO_DATA_REPLACE_BEFORE_PRODUCTION`.
+- [`CRM_APPS_SCRIPT.md`](./CRM_APPS_SCRIPT.md) — what each `apps-script/*.gs` file does.
+- [`CRM_SCHEMA.md`](./CRM_SCHEMA.md) — full column-level Google Sheets schema.
+- [`API_CONTRACT.md`](./API_CONTRACT.md) — Next.js ↔ Apps Script request/response contract,
+  signing algorithm, and shared test vectors.
+- [`APPS_SCRIPT_SETUP.md`](./APPS_SCRIPT_SETUP.md) — exact Apps Script deployment steps.
 
-Additional docs (`CRM_APPS_SCRIPT.md`, `CRM_SCHEMA.md`, `API_CONTRACT.md`,
-`APPS_SCRIPT_SETUP.md`, `META_SETUP.md`, `ANTHROPIC_SETUP.md`, `RENDER_SETUP.md`,
-`DEPLOYMENT.md`, `TESTING.md`, `OPERATIONS.md`, `LIMITATIONS.md`) are added as the phases that
-produce their content land — see `IMPLEMENTATION_STATUS.md` for which exist yet.
+Remaining docs (`META_SETUP.md`, `ANTHROPIC_SETUP.md`, `RENDER_SETUP.md`, `DEPLOYMENT.md`,
+`TESTING.md`, `OPERATIONS.md`, `LIMITATIONS.md`) are added as the phases that produce their
+content land — see `IMPLEMENTATION_STATUS.md` for current status.
 
 ## Environment variables
 
