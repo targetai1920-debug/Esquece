@@ -1,0 +1,268 @@
+openapi: 3.0.3
+info:
+  title: Esquece Barber Studio — Public Booking API
+  version: "1"
+  description: >
+    Consumed by the separate public Esquece website (built outside this repository — see
+    ARCHITECTURE.md and WEBSITE_INTEGRATION.md). Never call Google Apps Script directly; this
+    API is the only supported integration surface for the website.
+servers:
+  - url: http://localhost:3000
+    description: Local development (CRM_PROVIDER=mock by default)
+  - url: https://REPLACE_WITH_RENDER_URL
+    description: Production (set once deployed — see RENDER_SETUP.md)
+
+components:
+  schemas:
+    Envelope:
+      type: object
+      required: [ok, requestId, data, error]
+      properties:
+        ok: { type: boolean }
+        requestId: { type: string }
+        data: {}
+        error:
+          type: object
+          nullable: true
+          properties:
+            code: { type: string }
+            message: { type: string }
+            retryable: { type: boolean }
+    Service:
+      type: object
+      properties:
+        serviceId: { type: string }
+        name: { type: string }
+        description: { type: string }
+        price: { type: number }
+        currency: { type: string }
+        durationMinutes: { type: integer }
+        bufferMinutes: { type: integer }
+        active: { type: boolean }
+        displayOrder: { type: integer }
+    Barber:
+      type: object
+      properties:
+        barberId: { type: string }
+        name: { type: string }
+        biography: { type: string }
+        photoUrl: { type: string }
+        active: { type: boolean }
+        displayOrder: { type: integer }
+    AvailableSlot:
+      type: object
+      properties:
+        localStartTime: { type: string, example: "10:00" }
+        localEndTime: { type: string, example: "10:30" }
+        barberIds:
+          type: array
+          items: { type: string }
+    Appointment:
+      type: object
+      properties:
+        appointmentId: { type: string }
+        reference: { type: string, example: "ESQ-20260723-AB12" }
+        customerId: { type: string }
+        serviceId: { type: string }
+        barberId: { type: string }
+        localDate: { type: string, example: "2026-07-23" }
+        localStartTime: { type: string, example: "10:00" }
+        localEndTime: { type: string, example: "10:30" }
+        status: { type: string, enum: [PENDING, CONFIRMED, COMPLETED, CANCELLED, NO_SHOW] }
+        source: { type: string, enum: [WEBSITE, WHATSAPP, ADMIN] }
+    CreateAppointmentRequest:
+      type: object
+      required: [idempotencyKey, serviceId, localDate, localStartTime, customer]
+      properties:
+        idempotencyKey: { type: string }
+        serviceId: { type: string }
+        barberId: { type: string }
+        anyBarber: { type: boolean }
+        localDate: { type: string }
+        localStartTime: { type: string }
+        customer:
+          type: object
+          required: [name, phoneE164]
+          properties:
+            name: { type: string }
+            phoneE164: { type: string }
+        customerNotes: { type: string }
+
+paths:
+  /api/public/settings:
+    get:
+      summary: Business settings (hours, timezone, currency, policies)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /api/public/services:
+    get:
+      summary: List active services
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /api/public/services/{serviceId}:
+    get:
+      summary: Get one service
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+        "404": { description: SERVICE_NOT_FOUND }
+
+  /api/public/barbers:
+    get:
+      summary: List barbers, optionally filtered by eligible service
+      parameters:
+        - name: serviceId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+
+  /api/public/barbers/{barberId}:
+    get:
+      summary: Get one barber
+      parameters:
+        - name: barberId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+        "404": { description: BARBER_NOT_FOUND }
+
+  /api/public/faqs:
+    get:
+      summary: List FAQs
+      responses:
+        "200": { description: OK }
+
+  /api/public/promotions:
+    get:
+      summary: List currently-valid promotions
+      responses:
+        "200": { description: OK }
+
+  /api/public/availability:
+    post:
+      summary: Get available slots for a service/date (and barber, or any-barber)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [serviceId, localDate]
+              properties:
+                serviceId: { type: string }
+                localDate: { type: string }
+                barberId: { type: string }
+                anyBarber: { type: boolean }
+      responses:
+        "200":
+          description: OK — array of AvailableSlot in data
+        "400": { description: INVALID_PAYLOAD }
+        "404": { description: SERVICE_NOT_FOUND / BARBER_NOT_FOUND }
+
+  /api/public/availability/validate:
+    post:
+      summary: Check whether one exact slot is currently valid (not authoritative — re-checked at creation)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [serviceId, barberId, localDate, localStartTime]
+              properties:
+                serviceId: { type: string }
+                barberId: { type: string }
+                localDate: { type: string }
+                localStartTime: { type: string }
+      responses:
+        "200": { description: OK }
+
+  /api/public/appointments:
+    post:
+      summary: Create an appointment (source=WEBSITE)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAppointmentRequest" }
+      responses:
+        "200":
+          description: Created (or idempotent replay of an existing appointment)
+        "400": { description: INVALID_PAYLOAD }
+        "401": { description: UNAUTHORIZED — origin not approved }
+        "409": { description: SLOT_UNAVAILABLE / IDEMPOTENCY_CONFLICT / WEEKEND_CLOSED / etc. }
+        "429": { description: RATE_LIMITED }
+
+  /api/public/appointments/{reference}:
+    get:
+      summary: Get an appointment by reference (requires management token)
+      parameters:
+        - name: reference
+          in: path
+          required: true
+          schema: { type: string }
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+        "401": { description: UNAUTHORIZED — missing or wrong token }
+        "404": { description: APPOINTMENT_NOT_FOUND }
+
+  /api/public/appointments/{reference}/cancel:
+    post:
+      summary: Cancel an appointment (requires management token)
+      parameters:
+        - name: reference
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [managementToken]
+              properties:
+                managementToken: { type: string }
+                reason: { type: string }
+      responses:
+        "200": { description: OK (idempotent) }
+        "401": { description: UNAUTHORIZED }
+        "409": { description: APPOINTMENT_NOT_CHANGEABLE }
+
+  /api/public/appointments/{reference}/reschedule:
+    post:
+      summary: Reschedule an appointment (requires management token)
+      parameters:
+        - name: reference
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [managementToken, newLocalDate, newLocalStartTime]
+              properties:
+                managementToken: { type: string }
+                newLocalDate: { type: string }
+                newLocalStartTime: { type: string }
+      responses:
+        "200": { description: OK — original appointment untouched if this fails }
+        "401": { description: UNAUTHORIZED }
+        "409": { description: SLOT_UNAVAILABLE / APPOINTMENT_ALREADY_CANCELLED / APPOINTMENT_NOT_CHANGEABLE }

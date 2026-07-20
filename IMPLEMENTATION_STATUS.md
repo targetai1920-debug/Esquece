@@ -40,7 +40,7 @@ ever exceeded.
 | C | Apps Script CRM domain (services/barbers/customers/etc.) | DONE |
 | D | Apps Script booking engine (availability, locks, atomic create) | DONE |
 | E | Next.js CRM integration (CrmClient, AppsScriptCrmClient, MockCrmClient) | DONE |
-| F | Secure public booking API for the separate website (not the website itself) | NOT STARTED |
+| F | Secure public booking API for the separate website (not the website itself) | DONE |
 | G | Admin dashboard | NOT STARTED |
 | H | WhatsApp infrastructure (webhook, Meta client, dedup) | NOT STARTED |
 | I | Claude conversational agent | NOT STARTED |
@@ -299,45 +299,96 @@ ever exceeded.
   files, **24/24 passed**, `npm run build` succeeded, and the dev-server curl check above. Secret
   grep clean. `git status` reviewed before commit.
 
+- (Phase F) `lib/http/envelope.ts` — the `{ok, requestId, data, error}` response shape, with a
+  full CRM-error-code → HTTP-status map (e.g. `SLOT_UNAVAILABLE` → 409, `RATE_LIMITED` → 429,
+  `CRM_TIMEOUT` → 504) and `errorJsonFromException` so every route's catch block is one line.
+- (Phase F) `lib/http/cors.ts` — origin allowlist from `PUBLIC_WEBSITE_ORIGIN`
+  (comma-separated, for multiple approved origins) plus `localhost:3000`/`127.0.0.1:3000` only
+  in non-production; never a wildcard; preflight (`OPTIONS`) handling.
+- (Phase F) `lib/http/rateLimit.ts` — in-memory fixed-window limiter, explicitly documented as
+  not multi-instance-safe (SECURITY.md), swappable later behind the same `checkRateLimit()`
+  call sites. Three tiers: reads (120/min), availability (60/min), mutations (20/min).
+- (Phase F) `lib/http/publicRoute.ts` — shared wrapper (`publicApiRoute`) applying CORS, origin
+  enforcement (server-side, not just browser CORS — defense in depth per master spec §4) for
+  mutation routes, rate limiting, and uniform error mapping, so each of the 13 route files is
+  just its actual logic.
+- (Phase F) 13 `/api/public/*` routes: `settings`, `services`, `services/[serviceId]`,
+  `barbers` (+ `?serviceId=` filter), `barbers/[barberId]`, `faqs`, `promotions`,
+  `availability` (POST), `availability/validate` (POST), `appointments` (POST create),
+  `appointments/[reference]` (GET, requires `?token=`), `appointments/[reference]/cancel`
+  (POST), `appointments/[reference]/reschedule` (POST). All go through `getCrmClient()` from
+  Phase E — no route touches Apps Script or a database directly.
+- (Phase F) **Verified for real, not just unit-tested**: ran the actual dev server and drove
+  the full lifecycle with `curl` — list services → list eligible barbers → check availability →
+  create an appointment → confirm a duplicate request for the identical slot is rejected with
+  `SLOT_UNAVAILABLE` → confirm fetching by reference with no token returns `UNAUTHORIZED` and
+  with the correct token succeeds → reschedule → cancel → confirm an unapproved-origin CORS
+  preflight returns 403 while the approved dev origin returns 204. Every one of these behaved
+  exactly as designed against the real running Next.js server, not a mock harness.
+- (Phase F) **Found and fixed a real security gap while writing this**: `MockCrmClient`
+  accepted *any* value (or no value) as a management token on `cancelAppointment`/
+  `rescheduleAppointment` — it never actually compared it. Since the public API layer relies on
+  the CRM client to enforce "wrong token → rejected" for customer-initiated actions, this would
+  have made the demo/test environment silently insecure in a way production (Apps Script) isn't.
+  Fixed by adding a `managementTokens` map to the mock (mirroring `Appointments.gs`'s
+  `managementTokenHash` pattern, raw value kept in-memory only) and a `requireManagementToken`
+  check on `cancelAppointment`/`rescheduleAppointment` (when `actor.type === "customer"`) and
+  `getAppointmentByReference` (when a token is supplied, matching Apps Script's own semantics).
+  Caught by the new integration test suite, not by inspection — exactly the value of testing
+  through the real route handlers instead of only unit-testing internals in isolation.
+- (Phase F) `tests/public-api.test.ts` — 9 tests calling the actual exported route handler
+  functions (the same functions Next.js itself invokes), covering the full lifecycle, payload
+  validation, CORS preflight, server-side origin enforcement on the real POST (not just
+  preflight), no-Origin server-to-server calls being allowed, and rate limiting. Added a matching
+  unit test to `tests/mock-crm-client.test.ts` for the management-token fix specifically.
+- (Phase F) `src/app/dev/api-test/` — minimal, unstyled, development-only page (disabled in
+  production via a `NODE_ENV` check) that drives the same full lifecycle through the browser,
+  for manual smoke-testing without curl. Explicitly not the final website.
+- (Phase F) `WEBSITE_INTEGRATION.md` (complete endpoint-by-endpoint reference: auth, CORS,
+  envelope, rate limits, idempotency, management tokens, slot-unavailable recovery, stale-state
+  avoidance, production checklist) and `openapi.yaml` (machine-readable, YAML-validated).
+- (Phase F) Full quality gate: `npm run lint` clean, `npm run typecheck` clean, `npm test` → 4
+  files, **34/34 passed**, `npm run build` succeeded (all 13 public routes + health + dev page
+  build correctly). Secret grep clean. `git status` reviewed before commit.
+
 ## In-progress tasks
 
-None — Phases A through E are complete as of this update. Phase F (secure public booking API for
-the separate website) has not been started.
+None — Phases A through F are complete as of this update. Phase G (admin dashboard) has not
+been started.
 
 ## Remaining tasks
 
-Everything in Phases F–K — see the phase list in `PROJECT_PLAN.md`. Phase F specifically starts
-with: `/api/public/*` routes (settings, services, barbers, availability, appointment create/
-cancel/reschedule), all going through the same `getCrmClient()` from Phase E, Zod-validated
-request/response, idempotency-key handling, CORS scoped to `PUBLIC_WEBSITE_ORIGIN`, rate
-limiting, and `WEBSITE_INTEGRATION.md` + `openapi.yaml` documenting the contract for whoever
-builds the separate website. Conversation/webhook-dedup/handoff Apps Script actions remain
-deliberately deferred to Phase H, per the note in `API_CONTRACT.md`.
+Everything in Phases G–K — see the phase list in `PROJECT_PLAN.md`. Phase G specifically starts
+with: admin auth (env-based `ADMIN_EMAIL`/`ADMIN_PASSWORD_HASH`/`AUTH_SECRET`, session cookie via
+`jose`, login throttling), then the dashboard/appointments/customers/services/barbers/schedules
+screens, all calling the same `getCrmClient()` — including the admin CRUD actions
+(create/edit/activate services and barbers, schedule/break/time-off/block management) that Phase
+C deliberately deferred rather than build with no caller yet. Those Apps Script actions need to
+be added in Phase G alongside the admin screens that call them (same "don't build unused API
+surface early" reasoning already applied twice in this build).
 
 ## Blockers
 
-None credential-related yet — Phases F onward remain credential-independent until Phase K's
+None credential-related yet — Phases G onward remain credential-independent until Phase K's
 external configuration gate. The one real external step still pending since Phase B is an actual
 Apps Script deployment to confirm this session's mock-based verification holds up in the real
 environment — not a blocker to continuing, just an honestly-labeled gap (see
-`apps-script/README.md`). `AppsScriptCrmClient`'s signing/retry/error-mapping logic is now also
-in that same "verified in isolation, not yet proven against a live counterpart" category —
-`tests/crm-signing.test.ts` proves the two implementations *agree on the algorithm*, not that a
-real network round-trip between them works.
+`apps-script/README.md`).
 
 ## Latest commit
 
-Phase E committed and pushed — see the session's final report for the exact hash (this file is
-updated in the same commit as Phase E's code, so `git log -1` in the repo is the authoritative
+Phase F committed and pushed — see the session's final report for the exact hash (this file is
+updated in the same commit as Phase F's code, so `git log -1` in the repo is the authoritative
 source if this line is ever stale).
 
 ## Tests last executed
 
-Post-Phase-E (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 3
-files, **24/24 passed** (5 phone + 6 signing + 13 MockCrmClient), `npm run build` succeeded.
-Additionally verified live: ran `npm run dev` and curled `/api/health` and `/api/health/crm`
-against the real Next.js runtime — both returned correct JSON. Apps Script side unchanged since
-Phase D (17/17 via the mock harness, not re-run this phase since no `.gs` files changed).
+Post-Phase-F (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 4
+files, **34/34 passed** (5 phone + 6 signing + 14 MockCrmClient + 9 public API), `npm run build`
+succeeded. Additionally verified live: ran `npm run dev` and drove the complete booking lifecycle
+via `curl` against the real running server (see the detailed bullet above) — this is real
+end-to-end proof for this repo's own API surface, though still bounded by `CRM_PROVIDER=mock`
+(no live Apps Script deployment exists to test against yet).
 
 ## External configuration still required
 

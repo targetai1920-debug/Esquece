@@ -60,6 +60,9 @@ Apps Script deployment exists (see `APPS_SCRIPT_SETUP.md`).
 - [`API_CONTRACT.md`](./API_CONTRACT.md) — Next.js ↔ Apps Script request/response contract,
   signing algorithm, and shared test vectors.
 - [`APPS_SCRIPT_SETUP.md`](./APPS_SCRIPT_SETUP.md) — exact Apps Script deployment steps.
+- [`WEBSITE_INTEGRATION.md`](./WEBSITE_INTEGRATION.md) — everything the **separate** public
+  website needs to consume this repo's booking API (it never talks to Apps Script directly).
+- [`openapi.yaml`](./openapi.yaml) — machine-readable spec for the same public API.
 
 Remaining docs (`META_SETUP.md`, `ANTHROPIC_SETUP.md`, `RENDER_SETUP.md`, `DEPLOYMENT.md`,
 `TESTING.md`, `OPERATIONS.md`, `LIMITATIONS.md`) are added as the phases that produce their

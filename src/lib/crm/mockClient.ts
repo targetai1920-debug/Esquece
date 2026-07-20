@@ -121,6 +121,14 @@ export class MockCrmClient implements CrmClient {
   private notifications: Notification[] = [];
   private auditEntries: AuditEntry[] = [];
   private webhookEvents = new Map<string, "PROCESSING" | "PROCESSED" | "FAILED">();
+  /**
+   * appointmentId -> raw management token. A real deployment only ever
+   * stores the hash (Appointments.gs's managementTokenHash) — this mock
+   * keeps the raw value in memory purely to verify it back, which is fine
+   * for a process-local, never-persisted-to-disk mock but would not be
+   * an acceptable pattern for the real Apps Script implementation.
+   */
+  private managementTokens = new Map<string, string>();
 
   constructor() {
     this.settings = {
@@ -172,6 +180,14 @@ export class MockCrmClient implements CrmClient {
     this.workingHours = this.barbers.flatMap((b) =>
       [1, 2, 3, 4, 5].map((day) => ({ barberId: b.barberId, dayOfWeek: day, openingTime: "08:00", closingTime: "16:00", active: true })),
     );
+  }
+
+  /** Mirrors Apps Script's verifyManagementTokenOrThrow_ — see Appointments.gs. */
+  private requireManagementToken(appointmentId: string, providedToken: string | undefined) {
+    const expected = this.managementTokens.get(appointmentId);
+    if (!providedToken || providedToken !== expected) {
+      throw new CrmError("UNAUTHORIZED", "Token de gestión inválido.", false);
+    }
   }
 
   private requireActiveService(serviceId: string): Service {
@@ -483,6 +499,7 @@ export class MockCrmClient implements CrmClient {
       demo: false,
     };
     this.appointments.push(appointment);
+    this.managementTokens.set(appointment.appointmentId, rawManagementToken);
 
     this.auditEntries.push({
       auditId: randomUUID(), requestId: null,
@@ -530,7 +547,13 @@ export class MockCrmClient implements CrmClient {
   async getAppointmentByReference(reference: string, managementToken?: string): Promise<Appointment> {
     const appointment = this.appointments.find((a) => a.reference === reference);
     if (!appointment) throw new CrmError("APPOINTMENT_NOT_FOUND", "Cita no encontrada.", false);
-    void managementToken; // mock stores no token hash; real enforcement is Apps Script's job
+    // Verified only when a token is actually supplied — mirrors Apps Script's
+    // actionGetAppointmentByReference_ (Appointments.gs): callers that don't
+    // need a token (e.g. an authenticated admin, once Phase G exists) aren't
+    // required to pass one. The public API (Phase F) always passes one.
+    if (managementToken !== undefined) {
+      this.requireManagementToken(appointment.appointmentId, managementToken);
+    }
     return clone(appointment);
   }
 
@@ -551,6 +574,9 @@ export class MockCrmClient implements CrmClient {
       ? this.appointments.find((a) => a.appointmentId === input.appointmentId)
       : this.appointments.find((a) => a.reference === input.reference);
     if (!appointment) throw new CrmError("APPOINTMENT_NOT_FOUND", "Cita no encontrada.", false);
+    if (input.actor.type === "customer") {
+      this.requireManagementToken(appointment.appointmentId, input.managementToken);
+    }
     if (appointment.status === "COMPLETED") throw new CrmError("APPOINTMENT_NOT_CHANGEABLE", "Esta cita ya fue completada.", false);
     if (appointment.status === "CANCELLED") return clone(appointment);
 
@@ -566,6 +592,9 @@ export class MockCrmClient implements CrmClient {
   async rescheduleAppointment(input: RescheduleAppointmentInput): Promise<Appointment> {
     const appointment = this.appointments.find((a) => a.appointmentId === input.appointmentId);
     if (!appointment) throw new CrmError("APPOINTMENT_NOT_FOUND", "Cita no encontrada.", false);
+    if (input.actor.type === "customer") {
+      this.requireManagementToken(appointment.appointmentId, input.managementToken);
+    }
     if (appointment.status === "COMPLETED") throw new CrmError("APPOINTMENT_NOT_CHANGEABLE", "Esta cita ya fue completada.", false);
     if (appointment.status === "CANCELLED") throw new CrmError("APPOINTMENT_ALREADY_CANCELLED", "Esta cita ya fue cancelada.", false);
 

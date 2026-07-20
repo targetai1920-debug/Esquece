@@ -137,6 +137,30 @@ describe("MockCrmClient", () => {
     expect(rebooked.appointment.status).toBe("CONFIRMED");
   });
 
+  it("management token is enforced for customer-initiated cancel/reschedule/lookup, not for admin", async () => {
+    const created = await crm.createAppointment({
+      idempotencyKey: "k-token", source: "WEBSITE", serviceId: "demo-service-1", barberId: "demo-barber-1",
+      localDate: weekday, localStartTime: "09:30", customer: { name: "Cliente", phoneE164: "+59170000004" },
+    });
+    const { reference } = created.appointment;
+    const realToken = created.managementToken!;
+
+    await expect(
+      crm.getAppointmentByReference(reference, "wrong-token"),
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(crm.getAppointmentByReference(reference, realToken)).resolves.toMatchObject({ reference });
+    // No token at all — Apps Script's own semantics: verified only if a token is actually supplied.
+    await expect(crm.getAppointmentByReference(reference)).resolves.toMatchObject({ reference });
+
+    await expect(
+      crm.cancelAppointment({ appointmentId: created.appointment.appointmentId, actor: { type: "customer" }, managementToken: "wrong-token" }),
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+
+    // Admin doesn't need a token at all.
+    const adminCancelled = await crm.cancelAppointment({ appointmentId: created.appointment.appointmentId, actor: { type: "admin" } });
+    expect(adminCancelled.status).toBe("CANCELLED");
+  });
+
   it("reschedule fails into a taken slot without touching the original appointment", async () => {
     const a = await crm.createAppointment({
       idempotencyKey: "k-a", source: "WEBSITE", serviceId: "demo-service-1", barberId: "demo-barber-1",
