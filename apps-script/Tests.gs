@@ -200,6 +200,94 @@ var INTERNAL_TESTS_ = [
       }
     },
   },
+  {
+    // The one test the master spec calls out explicitly: two attempts to
+    // book the exact same barber and slot — only one may succeed. Runs
+    // sequentially (Apps Script's script lock serializes real concurrent
+    // requests to the same outcome this simulates: whichever acquires the
+    // lock second re-reads the sheet and correctly sees the slot taken).
+    name: "double booking: two requests for the same barber+slot, only one succeeds",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var testPhoneA = "59100000001";
+      var testPhoneB = "59100000002";
+      var createdAppointmentIds = [];
+      try {
+        var first = actionCreateAppointment_({
+          idempotencyKey: "test-race-key-a-" + testDate,
+          source: "WEBSITE",
+          serviceId: "demo-service-1",
+          barberId: "demo-barber-1",
+          localDate: testDate,
+          localStartTime: "09:00",
+          customer: { name: "Prueba Carrera A", phoneE164: testPhoneA },
+        });
+        createdAppointmentIds.push(first.appointment.appointmentId);
+
+        assertThrowsCode_(function () {
+          var second = actionCreateAppointment_({
+            idempotencyKey: "test-race-key-b-" + testDate,
+            source: "WEBSITE",
+            serviceId: "demo-service-1",
+            barberId: "demo-barber-1",
+            localDate: testDate,
+            localStartTime: "09:00", // identical slot
+            customer: { name: "Prueba Carrera B", phoneE164: testPhoneB },
+          });
+          createdAppointmentIds.push(second.appointment.appointmentId); // would only run if it wrongly succeeded
+        }, ERROR_CODES.SLOT_UNAVAILABLE, "second concurrent booking for the same slot");
+
+        var confirmedForSlot = findRowsWhere_(getAppointmentsSheet_(), function (row) {
+          return row.barberId === "demo-barber-1" && row.localDate === testDate &&
+            row.localStartTime === "09:00" && row.status === "CONFIRMED";
+        });
+        if (confirmedForSlot.length !== 1) {
+          throw new Error("expected exactly 1 confirmed appointment for the contested slot, found " + confirmedForSlot.length);
+        }
+      } finally {
+        createdAppointmentIds.forEach(function (id) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === id; });
+        });
+        [testPhoneA, testPhoneB].forEach(function (phone) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === phone; });
+        });
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "retrying appointment creation with the same idempotency key does not create a duplicate",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var testPhone = "59100000003";
+      var idemKey = "test-idempotency-key-" + testDate;
+      try {
+        var firstAttempt = actionCreateAppointment_({
+          idempotencyKey: idemKey, source: "WHATSAPP", serviceId: "demo-service-1", barberId: "demo-barber-2",
+          localDate: testDate, localStartTime: "09:00", customer: { name: "Prueba Idempotencia", phoneE164: testPhone },
+        });
+        var retryAttempt = actionCreateAppointment_({
+          idempotencyKey: idemKey, source: "WHATSAPP", serviceId: "demo-service-1", barberId: "demo-barber-2",
+          localDate: testDate, localStartTime: "09:00", customer: { name: "Prueba Idempotencia", phoneE164: testPhone },
+        });
+        if (retryAttempt.appointment.appointmentId !== firstAttempt.appointment.appointmentId) {
+          throw new Error("retry created a second appointment instead of returning the first");
+        }
+        var matchingRows = findRowsWhere_(getAppointmentsSheet_(), function (row) { return row.idempotencyKey === idemKey; });
+        if (matchingRows.length !== 1) {
+          throw new Error("expected exactly 1 row for this idempotency key, found " + matchingRows.length);
+        }
+      } finally {
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.idempotencyKey === idemKey; });
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+        removeDemoData();
+      }
+    },
+  },
 ];
 
 /**

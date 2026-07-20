@@ -192,7 +192,7 @@ Defined in `apps-script/Errors.gs`: `UNAUTHORIZED`, `INVALID_SIGNATURE`, `REQUES
 itself is stable and machine-readable; the message in the response is a reasonable default, not
 necessarily the final customer-facing copy.
 
-## Actions implemented so far (Phases B–C)
+## Actions implemented so far (Phases B–D)
 
 | Action | Status |
 |---|---|
@@ -211,12 +211,32 @@ necessarily the final customer-facing copy.
 | `upsertCustomer` | Implemented (Phase C) |
 | `getCustomer` | Implemented (Phase C) |
 | `listCustomers` | Implemented (Phase C) |
-| `getCustomerHistory` | Implemented (Phase C) — reads `APPOINTMENTS` directly; correctly returns an empty list until Phase D creates rows there |
+| `getCustomerHistory` | Implemented (Phase C) — reads `APPOINTMENTS` directly |
+| `getAvailability` | Implemented (Phase D) — read-only, the twelve-point check (BOOKING_RULES.md §1) |
+| `validateSlot` | Implemented (Phase D) — single-slot version of the same check |
+| `createAppointment` | Implemented (Phase D) — `LockService`-guarded, idempotency-key required, re-validates under the lock |
+| `getAppointment` | Implemented (Phase D) |
+| `getAppointmentByReference` | Implemented (Phase D) — optionally verifies a management token |
+| `listAppointments` | Implemented (Phase D) — filterable by date/barber/status |
+| `listCustomerAppointments` | Implemented (Phase D) |
+| `cancelAppointment` | Implemented (Phase D) — idempotent, requires a management token for `actor.type === "customer"` |
+| `rescheduleAppointment` | Implemented (Phase D) — validates the new slot before touching the old one |
+| `updateAppointmentStatus` | Implemented (Phase D) — admin-only status transitions (e.g. `COMPLETED`, `NO_SHOW`) |
+| `createAuditEntry` | Implemented (Phase D) |
+| `listAuditEntries` | Implemented (Phase D) |
+| `createNotification` | Implemented (Phase D) — row creation only, sending is Phase J |
+| `listDueNotifications` | Implemented (Phase D) |
+| `claimNotification` | Implemented (Phase D) — `LockService`-guarded PENDING→PROCESSING transition |
+| `markNotificationSent` | Implemented (Phase D) |
+| `markNotificationFailed` | Implemented (Phase D) |
+| `cancelNotification` | Implemented (Phase D) |
 
-Every action in the master spec's action list for availability/appointments/conversations/
-webhook dedup/handoff/notifications/audit (~20 more actions) is **not yet implemented**; each is
-added to `apps-script/Router.gs`'s `ACTION_HANDLERS_` object literal directly (not via
-`registerAction_` from another file's top-level scope — see the comment at the top of
-`Router.gs` for why that would be an ordering hazard) as Phases D–H–I–J land, and this table is
-updated in the same commit as the code that adds it — check `git log` on this file, or
+Conversation/webhook-dedup/human-handoff actions (`getOrCreateConversation`,
+`applyConversationTurn`, `registerWebhookEvent`, `activateHumanHandoff`, etc.) are **not yet
+implemented** — deliberately deferred to land together with Phase H (WhatsApp infrastructure),
+the first real consumer of them, rather than building untested API surface with no caller yet.
+Every action here is listed directly in `apps-script/Router.gs`'s `ACTION_HANDLERS_` object
+literal (not via `registerAction_` from another file's top-level scope — see the comment at the
+top of `Router.gs` for why that would be an ordering hazard), and this table is updated in the
+same commit as the code that adds an entry — check `git log` on this file, or
 `IMPLEMENTATION_STATUS.md`, for the current truth if this table is ever stale.

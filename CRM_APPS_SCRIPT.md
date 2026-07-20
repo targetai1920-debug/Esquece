@@ -29,16 +29,19 @@ What each file in `apps-script/` does. See `CRM_SCHEMA.md` for the sheet schema 
 | `Barbers.gs` | `BARBERS`/`BARBER_SERVICES` sheet access, `listBarbers`/`getBarber`/`listBarbersForService` actions, `requireActiveBarber_`, `requireBarberEligibleForService_` (BOOKING_RULES.md §1.1). |
 | `Customers.gs` | `CUSTOMERS` sheet access, phone-deduped `upsertCustomer`, `findCustomerByPhone`/`getCustomer`/`listCustomers`/`getCustomerHistory` actions, `recalculateCustomerCounters()` repair tool. |
 | `Content.gs` | `FAQS`/`PROMOTIONS` read actions — `listPromotions` already filters to currently-valid ones (`ARCHITECTURE.md` §7: Claude must never mention an inactive/expired promotion). |
-| `Tests.gs` | `runAllInternalTests()` — non-destructive tests: setup idempotency, request signing, system actions (Phase B), domain reads against seeded-then-removed demo data, and customer upsert dedup (Phase C). Booking-rule tests land in Phase D alongside the code they test. |
+| `AuditLog.gs` | `AUDIT_LOG` sheet access, `writeAuditEntry_` (called internally by every mutation in `Appointments.gs`), `createAuditEntry`/`listAuditEntries` actions. |
+| `Availability.gs` | The availability engine: `checkSlotValidity_` (the twelve-point check, BOOKING_RULES.md §1), `getAvailableSlotsForBarber_` (grid generation, §2), `getAvailability`/`validateSlot` actions. Every working-hours/break/time-off/blocked-slot/appointment-overlap helper lives here, each used by exactly one place (`checkSlotValidity_`) so the rule is never duplicated. |
+| `Appointments.gs` | The only place `APPOINTMENTS` rows are written. `createAppointment`/`cancelAppointment`/`rescheduleAppointment`/`updateAppointmentStatus` actions, all under `LockService.getScriptLock()` via `withScriptLock_`; `pickBarberForAnyAvailable_` (deterministic tie-break, BOOKING_RULES.md §1); management-token issuance/verification. |
+| `Notifications.gs` | `NOTIFICATIONS` sheet access — row creation (called by `Appointments.gs`) plus `listDueNotifications`/`claimNotification` (lock-guarded)/`markNotificationSent`/`markNotificationFailed`/`cancelNotification` actions. Actual WhatsApp *sending* is Phase J; this phase only manages the rows. |
+| `Tests.gs` | `runAllInternalTests()` — non-destructive tests: setup idempotency, request signing, system actions (Phase B); domain reads and customer upsert dedup (Phase C); **the double-booking race test the master spec calls out explicitly** (two requests for the same barber+slot, only one succeeds), appointment-creation idempotency (Phase D). Every test that creates real rows cleans them up in a `finally` block. |
 
 ## Not yet present (later phases)
 
-- `Availability.gs`, `Appointments.gs` — booking engine, locking, atomic creation (Phase D).
-- `Conversations.gs`, `Messages.gs`, `Handoffs.gs` — conversation/handoff persistence actions
-  (Phase D, consumed by Phase H/I).
-- `Notifications.gs`, `CalendarSync.gs` — Phase J.
-- `AuditLog.gs` — audit-entry actions (introduced alongside whichever Phase C/D action first
-  needs to write one).
+- `Conversations.gs`, `Messages.gs`, `Handoffs.gs` — conversation state persistence, webhook
+  event dedup, human handoff actions. Deliberately deferred to land together with Phase H
+  (WhatsApp infrastructure) — the first real consumer — rather than building this API surface
+  with no caller to exercise it yet.
+- `CalendarSync.gs` — Phase J, alongside the rest of the notification-sending machinery.
 
 This list is illustrative, not a binding file-naming contract — if a later phase finds a
 different split clearer (e.g. merging two small files), that's fine as long as no single file

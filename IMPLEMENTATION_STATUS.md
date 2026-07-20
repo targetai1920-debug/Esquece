@@ -30,7 +30,7 @@ future path if Sheets/Apps Script capacity is ever exceeded.
 | A | Architecture migration (Prisma → Apps Script CRM) | DONE |
 | B | Apps Script CRM foundation | DONE |
 | C | Apps Script CRM domain (services/barbers/customers/etc.) | DONE |
-| D | Apps Script booking engine (availability, locks, atomic create) | NOT STARTED |
+| D | Apps Script booking engine (availability, locks, atomic create) | DONE |
 | E | Next.js CRM integration (CrmClient, AppsScriptCrmClient, MockCrmClient) | NOT STARTED |
 | F | Public website (full booking flow, management page) | NOT STARTED |
 | G | Admin dashboard | NOT STARTED |
@@ -171,47 +171,105 @@ future path if Sheets/Apps Script capacity is ever exceeded.
   (the identical nonce-reuse check already passed in Phase B's verification with a correctly
   persistent mock), and fixed in the test harness, not the source.
 
+- (Phase D) `AuditLog.gs`: `writeAuditEntry_` (used internally by every `Appointments.gs`
+  mutation), `createAuditEntry`/`listAuditEntries` actions.
+- (Phase D) `Notifications.gs`: row creation (called by `Appointments.gs` on
+  create/cancel/reschedule) plus `listDueNotifications`/`claimNotification` (lock-guarded
+  PENDING→PROCESSING)/`markNotificationSent`/`markNotificationFailed`/`cancelNotification`
+  actions. Sending itself is Phase J — this is row management only.
+- (Phase D) `Availability.gs`: the actual availability engine. `checkSlotValidity_` implements
+  BOOKING_RULES.md §1's twelve-point check end-to-end (weekday-open, lead-time, advance-window,
+  business-hours containment via `getEffectiveWorkingIntervalsMinutes_` which correctly
+  intersects barber-specific and general `WORKING_HOURS` rows, then non-overlap against breaks/
+  time-off/blocked-slots/active-appointments). `getAvailableSlotsForBarber_` generates the
+  interval-stepped grid (§2) and filters it through the same check. `getAvailability`/
+  `validateSlot` actions.
+- (Phase D) `Appointments.gs`: `createAppointment`, `cancelAppointment`, `rescheduleAppointment`,
+  `updateAppointmentStatus` — every mutation wrapped in `withScriptLock_`
+  (`LockService.getScriptLock()`, re-validates the slot under the lock, releases in `finally`
+  even on exception). `createAppointment` requires an idempotency key, upserts the customer,
+  snapshots service/barber details, generates a reference + management token (only the hash is
+  stored), writes an audit entry, and creates a `CONFIRMATION` notification row.
+  `pickBarberForAnyAvailable_` implements the documented tie-break (fewest same-day appointments,
+  then `displayOrder`, then name) for "cualquiera disponible." `cancelAppointment` is idempotent
+  and requires a valid management token when `actor.type === "customer"`.
+  `rescheduleAppointment` validates the new slot **before** touching the existing row (a failed
+  reschedule leaves the original completely untouched — verified explicitly) and correctly
+  excludes the appointment's own current interval from its own conflict check.
+- (Phase D) Eliminated a real duplication risk found while writing this: originally wrote a
+  second, nearly-identical copy of the twelve-point check in `Appointments.gs` just to add one
+  exclusion parameter for reschedule. Refactored `checkSlotValidity_` itself to accept an
+  optional `excludeAppointmentId` instead — one rule implementation, not two that could drift.
+- (Phase D) Extended `Tests.gs` with the **exact test the master spec calls out by name**: two
+  requests for the same barber+slot, asserting only one succeeds and exactly one `CONFIRMED` row
+  exists afterward — plus an idempotency-retry test. Both create real rows and clean them up in
+  a `finally` block regardless of pass/fail. Added `addDaysToLocalDate_`/`nextWeekdayLocalDate_`
+  to `DateTime.gs` to compute safe test dates relative to whenever the test actually runs (never
+  a hardcoded date that would eventually fall in the past).
+- (Phase D) Updated `API_CONTRACT.md` (18 more actions), `CRM_APPS_SCRIPT.md`,
+  `apps-script/README.md`.
+- (Phase D) **Verification, same honest standard as B/C, extended**: not deployed to a live Apps
+  Script project. Beyond the standard mock-execution approach, this phase's harness modeled
+  `LockService` (tracking held/released state to catch a leaked lock — none found across 21
+  acquisitions in the full run) and used **real current dates** computed at test-run time (never
+  hardcoded) so lead-time/weekday logic is exercised against real values, not fixtures rigged to
+  pass. 34 direct checks plus the full 17-test `runAllInternalTests()` suite (15 prior + 2 new)
+  all passed, covering: correct slot generation (grid starting at opening time, correct barber
+  list per slot); Saturday returning zero slots; a slot whose end lands exactly at closing
+  accepted, one minute later rejected; **the double-booking race** (second request for an
+  identical barber+slot rejected with `SLOT_UNAVAILABLE`, exactly one `CONFIRMED` row survives);
+  a non-overlapping slot for the same barber still succeeding; idempotent retry returning the
+  original appointment without reissuing a management token; idempotency-key reuse with
+  different data rejected; "any barber" correctly picking the less-booked barber; cancellation
+  idempotency and management-token enforcement; a cancelled slot becoming rebookable; reschedule
+  correctly rejecting into a taken slot **while leaving the original appointment fully intact**,
+  succeeding into a free one, and not conflicting with its own current slot; notification rows
+  created as a side effect of each mutation type; claim-once enforcement; and audit entries
+  present for the full appointment lifecycle. This is real logic verification of the system's
+  single most correctness-critical component — but it is still not a live-deployment proof; see
+  `apps-script/README.md`.
+
 ## In-progress tasks
 
-None — Phases A, B, and C are complete as of this update. Phase D (Apps Script booking engine)
+None — Phases A, B, C, and D are complete as of this update. Phase E (Next.js CRM integration)
 has not been started.
 
 ## Remaining tasks
 
-Everything in Phases D–K — see the phase list in `PROJECT_PLAN.md`. Phase D specifically starts
-with: `Availability.gs` (the actual `getAvailability`/`validateSlot` nine-point check from
-BOOKING_RULES.md §1, reading `WORKING_HOURS`/`BREAKS`/`TIME_OFF`/`BLOCKED_SLOTS`/`APPOINTMENTS`)
-and `Appointments.gs` (`createAppointment`/`cancelAppointment`/`rescheduleAppointment` under
-`LockService.getScriptLock()`, idempotency-key handling, management-token issuance, audit
-entries) — plus `Conversations.gs`/`Messages.gs`/`Handoffs.gs` for the conversation/dedup/
-handoff actions Phase H/I will call. This is the largest and most correctness-critical remaining
-phase; expect it to need the same execute-don't-just-read verification discipline as B/C, scaled
-up (especially the concurrent-booking race behavior, which is hard to prove without a real Apps
-Script deployment — see the honesty note this file will carry once that phase lands).
+Everything in Phases E–K — see the phase list in `PROJECT_PLAN.md`. Phase E specifically starts
+with: the `CrmClient` TypeScript interface, `lib/crm/signing.ts` (must match `Security.gs`
+byte-for-byte — verify against `API_CONTRACT.md`'s three shared test vectors before trusting
+it), `AppsScriptCrmClient`, and `MockCrmClient` (same business rules as the real Apps Script
+engine, so the whole booking flow is demonstrable with `CRM_PROVIDER=mock` and zero external
+credentials). Conversation/webhook-dedup/handoff Apps Script actions remain deliberately
+deferred to Phase H, per the note added to `API_CONTRACT.md` in this update.
 
 ## Blockers
 
-None credential-related yet — Phases D onward remain credential-independent (mocks/local Apps
-Script source, verified the same way B/C were) until Phase K's external configuration gate. The
-one real external step still pending since Phase B is an actual Apps Script deployment to
-confirm this session's mock-based verification holds up in the real environment — not a blocker
-to continuing, just an honestly-labeled gap (see `apps-script/README.md`).
+None credential-related yet — Phases E onward remain credential-independent until Phase K's
+external configuration gate. The one real external step still pending since Phase B is an actual
+Apps Script deployment to confirm this session's mock-based verification holds up in the real
+environment — not a blocker to continuing, just an honestly-labeled gap (see
+`apps-script/README.md`). This matters more starting now than it did for B/C: Phase D's
+concurrency guarantee specifically relies on `LockService` behaving as documented, which no
+amount of single-threaded Node mocking can fully prove — flagging this explicitly rather than
+letting it quietly ride along as "already covered."
 
 ## Latest commit
 
-Phase C committed and pushed — see the session's final report for the exact hash (this file is
-updated in the same commit as Phase C's code, so `git log -1` in the repo is the authoritative
+Phase D committed and pushed — see the session's final report for the exact hash (this file is
+updated in the same commit as Phase D's code, so `git log -1` in the repo is the authoritative
 source if this line is ever stale).
 
 ## Tests last executed
 
-Post-Phase-C (this session): Next.js side unchanged and re-verified — `npm run lint` clean,
+Post-Phase-D (this session): Next.js side unchanged and re-verified — `npm run lint` clean,
 `npm run typecheck` clean, `npm test` → 2 files, 8/8 passed, `npm run build` succeeded. Apps
-Script side: all `.gs` files pass `node --check`; the full domain (Settings/Services/Barbers/
-Customers/Content) plus everything from Phase B was executed against mocked Apps Script globals,
-and `runAllInternalTests()` itself was invoked through that harness end-to-end, reporting
-**15/15 passed**. None of this was executed inside a real Apps Script project — see the detailed
-bullet above for exactly what is and isn't proven by that.
+Script side: all `.gs` files pass `node --check`; the full booking engine plus everything from
+Phases B/C was executed against mocked Apps Script globals (now including `LockService`), and
+`runAllInternalTests()` was invoked end-to-end through that harness, reporting **17/17 passed**,
+including the double-booking race test by name. None of this was executed inside a real Apps
+Script project — see the detailed bullet above for exactly what is and isn't proven by that.
 
 ## External configuration still required
 

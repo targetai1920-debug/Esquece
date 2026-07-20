@@ -23,6 +23,30 @@ function isValidLocalTime_(value) {
   return typeof value === "string" && LOCAL_TIME_PATTERN.test(value);
 }
 
+/** Pure calendar-date arithmetic — not an instant, so no timezone involved. */
+function addDaysToLocalDate_(localDate, days) {
+  var parts = localDate.split("-").map(Number);
+  var d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+  d.setUTCDate(d.getUTCDate() + days);
+  var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+  return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate());
+}
+
+/** 0 = Sunday ... 6 = Saturday, purely from the calendar date (no timezone conversion needed). */
+function weekdayOfLocalDateOnly_(localDate) {
+  var parts = localDate.split("-").map(Number);
+  return new Date(Date.UTC(parts[0], parts[1] - 1, parts[2])).getUTCDay();
+}
+
+/** Next date (starting from `daysFromNow` out) that isn't a Saturday/Sunday — for tests and any "pick a bookable day" UI helper. */
+function nextWeekdayLocalDate_(fromLocalDate, minDaysFromNow) {
+  var candidate = addDaysToLocalDate_(fromLocalDate, minDaysFromNow);
+  while (weekdayOfLocalDateOnly_(candidate) === 0 || weekdayOfLocalDateOnly_(candidate) === 6) {
+    candidate = addDaysToLocalDate_(candidate, 1);
+  }
+  return candidate;
+}
+
 /** 0 = Sunday ... 6 = Saturday, matching JS Date#getDay() and the WORKING_HOURS.dayOfWeek column. */
 function weekdayOfLocalDate_(localDate, timezone) {
   var d = parseLocalDateTimeToUtc_(localDate, "00:00", timezone);

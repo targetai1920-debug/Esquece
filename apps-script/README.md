@@ -4,18 +4,23 @@ Google Apps Script source for the Esquece CRM API. See `../CRM_APPS_SCRIPT.md` f
 file does, `../CRM_SCHEMA.md` for the sheet schema, `../API_CONTRACT.md` for the request/
 response contract, and `../APPS_SCRIPT_SETUP.md` for exact deployment steps.
 
-## Status (Phases B–C)
+## Status (Phases B–D)
 
 Implemented: project structure, sheet setup (`setupCRM()`), custom spreadsheet menu, request
 signing (`Security.gs`), standard response envelope, system actions
 (health/version/validate-structure), demo seed/remove, CRM domain reads (settings, services,
-barbers, barber-service eligibility, customers with phone-deduped upsert, FAQs, promotions), and
-an internal test runner covering all of that.
+barbers, barber-service eligibility, customers with phone-deduped upsert, FAQs, promotions), the
+full booking engine (availability computation — the twelve-point check in BOOKING_RULES.md §1 —
+plus `LockService`-guarded atomic appointment creation, idempotency, cancellation with
+management-token verification, and reschedule that never loses the original appointment on
+failure), audit logging, and notification row management (sending itself is Phase J). An
+internal test runner covers all of it, including the double-booking race the master spec calls
+out explicitly.
 
-Not yet implemented: the booking engine (availability computation, `LockService`-based atomic
-appointment creation, cancellation, reschedule — Phase D), conversation/webhook-dedup/handoff
-persistence actions (Phase D, consumed by Phase H/I), notifications and Calendar sync
-(Phase J). See `API_CONTRACT.md`'s action table for exactly which actions exist right now.
+Not yet implemented: conversation state persistence, webhook event dedup, and human handoff
+actions (deferred to Phase H, their first real consumer), and notification *sending* plus
+Calendar sync (Phase J). See `API_CONTRACT.md`'s action table for exactly which actions exist
+right now.
 
 **Not deployed.** This source has not been pushed to a live Apps Script project or executed
 against a real Google Sheet — see `IMPLEMENTATION_STATUS.md` for what's verified vs. pending

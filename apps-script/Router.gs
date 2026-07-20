@@ -41,6 +41,32 @@ var ACTION_HANDLERS_ = {
   getCustomer: actionGetCustomer_,
   listCustomers: actionListCustomers_,
   getCustomerHistory: actionGetCustomerHistory_,
+
+  // Availability (Phase D)
+  getAvailability: actionGetAvailability_,
+  validateSlot: actionValidateSlot_,
+
+  // Appointments (Phase D)
+  createAppointment: actionCreateAppointment_,
+  getAppointment: actionGetAppointment_,
+  getAppointmentByReference: actionGetAppointmentByReference_,
+  listAppointments: actionListAppointments_,
+  listCustomerAppointments: actionListCustomerAppointments_,
+  cancelAppointment: actionCancelAppointment_,
+  rescheduleAppointment: actionRescheduleAppointment_,
+  updateAppointmentStatus: actionUpdateAppointmentStatus_,
+
+  // Audit (Phase D)
+  createAuditEntry: actionCreateAuditEntry_,
+  listAuditEntries: actionListAuditEntries_,
+
+  // Notifications (Phase D — row management only; sending is Phase J)
+  createNotification: actionCreateNotification_,
+  listDueNotifications: actionListDueNotifications_,
+  claimNotification: actionClaimNotification_,
+  markNotificationSent: actionMarkNotificationSent_,
+  markNotificationFailed: actionMarkNotificationFailed_,
+  cancelNotification: actionCancelNotification_,
 };
 
 function registerAction_(name, handler) {
