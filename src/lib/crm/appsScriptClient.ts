@@ -7,25 +7,38 @@ import { buildSignedRequest } from "./signing";
 import * as schemas from "./schemas";
 import type {
   ActivateHandoffInput,
+  AdminCreateBarberInput,
+  AdminCreateBlockedSlotInput,
+  AdminCreateBreakInput,
+  AdminCreateServiceInput,
+  AdminCreateTimeOffInput,
+  AdminSetWorkingHoursInput,
+  AdminUpdateBarberInput,
+  AdminUpdateServiceInput,
   ApplyConversationTurnInput,
   AppointmentStatus,
   AvailabilityInput,
   AvailableSlot,
   Barber,
+  BlockedSlotRecord,
+  BreakRecord,
   BusinessSettings,
   CancelAppointmentInput,
   Conversation,
+  ConversationMessage,
   CreateAppointmentInput,
   CreateAppointmentResult,
   CreateNotificationInput,
   CrmClient,
   CrmHealth,
   Customer,
+  DashboardSummary,
   Faq,
   GetAppointmentInput,
   HumanHandoff,
   MessageDirection,
   Notification,
+  NotificationStatus,
   Promotion,
   RegisterWebhookEventInput,
   RegisterWebhookEventResult,
@@ -33,10 +46,12 @@ import type {
   ResolveHandoffInput,
   Service,
   SlotValidationResult,
+  TimeOffRecord,
   UpsertCustomerInput,
   ValidateSlotInput,
   Appointment,
   AuditEntry,
+  WorkingHours,
 } from "./types";
 
 const responseEnvelopeSchema = z.object({
@@ -420,5 +435,112 @@ export class AppsScriptCrmClient implements CrmClient {
       "listAuditEntries", filter || {}, z.object({ entries: z.array(schemas.auditEntrySchema) }), { retrySafe: true },
     );
     return result.entries;
+  }
+
+  // --- Admin (Phase G) ---
+
+  async adminListServices(): Promise<Service[]> {
+    const result = await this.call("adminListServices", {}, z.object({ services: z.array(schemas.serviceSchema) }), { retrySafe: true });
+    return result.services;
+  }
+  adminCreateService(input: AdminCreateServiceInput): Promise<Service> {
+    return this.call("adminCreateService", input, z.object({ service: schemas.serviceSchema })).then((r) => r.service);
+  }
+  adminUpdateService(serviceId: string, patch: AdminUpdateServiceInput): Promise<Service> {
+    return this.call("adminUpdateService", { serviceId, ...patch }, z.object({ service: schemas.serviceSchema })).then((r) => r.service);
+  }
+
+  async adminListBarbers(): Promise<Barber[]> {
+    const result = await this.call("adminListBarbers", {}, z.object({ barbers: z.array(schemas.barberSchema) }), { retrySafe: true });
+    return result.barbers;
+  }
+  adminCreateBarber(input: AdminCreateBarberInput): Promise<Barber> {
+    return this.call("adminCreateBarber", input, z.object({ barber: schemas.barberSchema })).then((r) => r.barber);
+  }
+  adminUpdateBarber(barberId: string, patch: AdminUpdateBarberInput): Promise<Barber> {
+    return this.call("adminUpdateBarber", { barberId, ...patch }, z.object({ barber: schemas.barberSchema })).then((r) => r.barber);
+  }
+  async adminSetBarberServices(barberId: string, serviceIds: string[]): Promise<void> {
+    await this.call("adminSetBarberServices", { barberId, serviceIds }, z.object({}).passthrough());
+  }
+  async adminGetBarberServices(barberId: string): Promise<string[]> {
+    const result = await this.call(
+      "adminGetBarberServices", { barberId }, z.object({ serviceIds: z.array(z.string()) }), { retrySafe: true },
+    );
+    return result.serviceIds;
+  }
+
+  async adminListWorkingHours(barberId?: string): Promise<WorkingHours[]> {
+    const result = await this.call(
+      "adminListWorkingHours", { barberId }, z.object({ workingHours: z.array(schemas.workingHoursSchema) }), { retrySafe: true },
+    );
+    return result.workingHours;
+  }
+  adminSetWorkingHours(input: AdminSetWorkingHoursInput): Promise<WorkingHours> {
+    return this.call("adminSetWorkingHours", input, z.object({ workingHours: schemas.workingHoursSchema })).then((r) => r.workingHours);
+  }
+
+  async adminListBreaks(barberId?: string): Promise<BreakRecord[]> {
+    const result = await this.call(
+      "adminListBreaks", { barberId }, z.object({ breaks: z.array(schemas.breakRecordSchema) }), { retrySafe: true },
+    );
+    return result.breaks;
+  }
+  adminCreateBreak(input: AdminCreateBreakInput): Promise<BreakRecord> {
+    return this.call("adminCreateBreak", input, z.object({ break: schemas.breakRecordSchema })).then((r) => r.break);
+  }
+  async adminDeleteBreak(breakId: string): Promise<void> {
+    await this.call("adminDeleteBreak", { breakId }, z.object({}).passthrough());
+  }
+
+  async adminListTimeOff(barberId?: string): Promise<TimeOffRecord[]> {
+    const result = await this.call(
+      "adminListTimeOff", { barberId }, z.object({ timeOff: z.array(schemas.timeOffRecordSchema) }), { retrySafe: true },
+    );
+    return result.timeOff;
+  }
+  adminCreateTimeOff(input: AdminCreateTimeOffInput): Promise<TimeOffRecord> {
+    return this.call("adminCreateTimeOff", input, z.object({ timeOff: schemas.timeOffRecordSchema })).then((r) => r.timeOff);
+  }
+  async adminDeleteTimeOff(timeOffId: string): Promise<void> {
+    await this.call("adminDeleteTimeOff", { timeOffId }, z.object({}).passthrough());
+  }
+
+  async adminListBlockedSlots(barberId?: string): Promise<BlockedSlotRecord[]> {
+    const result = await this.call(
+      "adminListBlockedSlots", { barberId }, z.object({ blockedSlots: z.array(schemas.blockedSlotRecordSchema) }), { retrySafe: true },
+    );
+    return result.blockedSlots;
+  }
+  adminCreateBlockedSlot(input: AdminCreateBlockedSlotInput): Promise<BlockedSlotRecord> {
+    return this.call("adminCreateBlockedSlot", input, z.object({ blockedSlot: schemas.blockedSlotRecordSchema })).then((r) => r.blockedSlot);
+  }
+  async adminDeleteBlockedSlot(blockedSlotId: string): Promise<void> {
+    await this.call("adminDeleteBlockedSlot", { blockedSlotId }, z.object({}).passthrough());
+  }
+
+  async adminListNotifications(status?: NotificationStatus): Promise<Notification[]> {
+    const result = await this.call(
+      "adminListNotifications", { status }, z.object({ notifications: z.array(schemas.notificationSchema) }), { retrySafe: true },
+    );
+    return result.notifications;
+  }
+  async adminListConversations(handoffActiveOnly?: boolean): Promise<Conversation[]> {
+    const result = await this.call(
+      "adminListConversations", { handoffActiveOnly },
+      z.object({ conversations: z.array(schemas.conversationSchema) as unknown as z.ZodType<Conversation[]> }),
+      { retrySafe: true },
+    );
+    return result.conversations;
+  }
+  async adminGetConversationMessages(conversationId: string): Promise<ConversationMessage[]> {
+    const result = await this.call(
+      "adminGetConversationMessages", { conversationId }, z.object({ messages: z.array(schemas.conversationMessageSchema) }), { retrySafe: true },
+    );
+    return result.messages;
+  }
+
+  adminGetDashboardSummary(): Promise<DashboardSummary> {
+    return this.call("adminGetDashboardSummary", {}, schemas.dashboardSummarySchema, { retrySafe: true });
   }
 }

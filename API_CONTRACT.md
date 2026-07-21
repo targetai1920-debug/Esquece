@@ -230,13 +230,35 @@ necessarily the final customer-facing copy.
 | `markNotificationSent` | Implemented (Phase D) |
 | `markNotificationFailed` | Implemented (Phase D) |
 | `cancelNotification` | Implemented (Phase D) |
+| `getOrCreateConversation` | Implemented (Phase G, built ahead of Phase H — see note below) |
+| `getConversation` | Implemented (Phase G) |
+| `applyConversationTurn` | Implemented (Phase G) — lock-guarded, optimistic version check, appends message rows |
+| `resetConversation` | Implemented (Phase G) |
+| `appendConversationMessage` | Implemented (Phase G) |
+| `registerWebhookEvent` | Implemented (Phase G) — lock-guarded dedup by `externalEventId` |
+| `markWebhookEventProcessed` | Implemented (Phase G) |
+| `markWebhookEventFailed` | Implemented (Phase G) |
+| `activateHumanHandoff` | Implemented (Phase G) — lock-guarded, sets conversation state to `HUMAN_HANDOFF` |
+| `resolveHumanHandoff` | Implemented (Phase G) — optional `reactivateBot` |
+| `listOpenHumanHandoffs` | Implemented (Phase G) |
+| `adminListServices` / `adminCreateService` / `adminUpdateService` | Implemented (Phase G) |
+| `adminListBarbers` / `adminCreateBarber` / `adminUpdateBarber` | Implemented (Phase G) |
+| `adminSetBarberServices` / `adminGetBarberServices` | Implemented (Phase G) |
+| `adminListWorkingHours` / `adminSetWorkingHours` | Implemented (Phase G) |
+| `adminListBreaks` / `adminCreateBreak` / `adminDeleteBreak` | Implemented (Phase G) — soft-delete via `active=false` |
+| `adminListTimeOff` / `adminCreateTimeOff` / `adminDeleteTimeOff` | Implemented (Phase G) |
+| `adminListBlockedSlots` / `adminCreateBlockedSlot` / `adminDeleteBlockedSlot` | Implemented (Phase G) |
+| `adminListNotifications` | Implemented (Phase G) — any status, unlike `listDueNotifications` |
+| `adminListConversations` | Implemented (Phase G) — optional `handoffActiveOnly` filter |
+| `adminGetConversationMessages` | Implemented (Phase G) |
+| `adminGetDashboardSummary` | Implemented (Phase G) — same figures as the `DASHBOARD` sheet, returned as JSON |
 
-Conversation/webhook-dedup/human-handoff actions (`getOrCreateConversation`,
-`applyConversationTurn`, `registerWebhookEvent`, `activateHumanHandoff`, etc.) are **not yet
-implemented** — deliberately deferred to land together with Phase H (WhatsApp infrastructure),
-the first real consumer of them, rather than building untested API surface with no caller yet.
-Every action here is listed directly in `apps-script/Router.gs`'s `ACTION_HANDLERS_` object
-literal (not via `registerAction_` from another file's top-level scope — see the comment at the
-top of `Router.gs` for why that would be an ordering hazard), and this table is updated in the
-same commit as the code that adds an entry — check `git log` on this file, or
+Conversation/webhook-dedup/human-handoff actions were originally planned to land together with
+Phase H (WhatsApp infrastructure), their first *WhatsApp-side* consumer — but Phase G's admin
+dashboard needed a conversations/handoffs view before Phase H started, so they were built now
+instead, with this exception documented at the time (see `IMPLEMENTATION_STATUS.md`'s Phase G
+entry). Every action here is listed directly in `apps-script/Router.gs`'s `ACTION_HANDLERS_`
+object literal (not via `registerAction_` from another file's top-level scope — see the comment
+at the top of `Router.gs` for why that would be an ordering hazard), and this table is updated in
+the same commit as the code that adds an entry — check `git log` on this file, or
 `IMPLEMENTATION_STATUS.md`, for the current truth if this table is ever stale.

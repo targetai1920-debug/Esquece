@@ -187,6 +187,21 @@ export const conversationSchema = z.object({
   updatedAt: z.string().optional().default(""),
 });
 
+export const conversationMessageSchema = z.object({
+  messageId: z.string(),
+  externalMessageId: z.string().nullable().optional().default(null),
+  conversationId: z.string(),
+  customerId: z.string().nullable().optional().default(null),
+  phoneE164: z.string(),
+  direction: z.enum(["INBOUND", "OUTBOUND"]),
+  messageType: z.string().optional().default("text"),
+  body: z.string().optional().default(""),
+  processingStatus: z.string().optional().default(""),
+  receivedAt: z.string().nullable().optional().default(null),
+  sentAt: z.string().nullable().optional().default(null),
+  createdAt: z.string().optional().default(""),
+});
+
 export const humanHandoffSchema = z.object({
   handoffId: z.string(),
   conversationId: z.string(),
@@ -236,9 +251,70 @@ export const auditEntrySchema = z.object({
   createdAt: z.string().optional().default(""),
 });
 
+export const dashboardSummarySchema = z.object({
+  date: z.string(),
+  appointmentsToday: z.number(),
+  confirmedToday: z.number(),
+  completedToday: z.number(),
+  cancelledToday: z.number(),
+  noShowToday: z.number(),
+  upcomingAppointments: z.number(),
+  openHandoffs: z.number(),
+  failedNotifications: z.number(),
+  activeCustomers: z.number(),
+  appointmentsThisWeek: z.number(),
+  appointmentsThisMonth: z.number(),
+  updatedAt: z.string(),
+});
+
 export const crmHealthSchema = z.object({
   status: z.enum(["ok", "degraded"]),
   schemaVersion: z.string(),
   apiVersion: z.string(),
   timestamp: z.string(),
+});
+
+// --- Admin (Phase G) ---
+
+export const workingHoursSchema = z.object({
+  workingHoursId: z.string(),
+  barberId: z.string(),
+  dayOfWeek: z.number(),
+  openingTime: z.string(),
+  closingTime: z.string(),
+  active: z.boolean(),
+});
+
+export const breakRecordSchema = z.object({
+  breakId: z.string(),
+  barberId: z.string(),
+  date: z.string().nullable().optional().default(null),
+  dayOfWeek: z.number().nullable().optional().default(null),
+  startTime: z.string(),
+  endTime: z.string(),
+  recurring: z.boolean(),
+  reason: z.string().optional().default(""),
+  active: z.boolean(),
+});
+
+export const timeOffRecordSchema = z.object({
+  timeOffId: z.string(),
+  barberId: z.string(),
+  startDate: z.string(),
+  endDate: z.string(),
+  startTime: z.string().optional().default(""),
+  endTime: z.string().optional().default(""),
+  allDay: z.boolean(),
+  reason: z.string().optional().default(""),
+  active: z.boolean(),
+});
+
+export const blockedSlotRecordSchema = z.object({
+  blockedSlotId: z.string(),
+  barberId: z.string().nullable().optional().default(null),
+  localDate: z.string(),
+  startTime: z.string(),
+  endTime: z.string(),
+  reason: z.string().optional().default(""),
+  active: z.boolean(),
 });

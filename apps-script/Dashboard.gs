@@ -10,8 +10,7 @@ var DASHBOARD_LABELS_ = [
   "Clientes activos", "Citas esta semana", "Citas este mes", "Actualizado",
 ];
 
-function rebuildDashboard_(spreadsheet) {
-  var sheet = spreadsheet.getSheetByName(SHEET_NAMES.DASHBOARD) || spreadsheet.insertSheet(SHEET_NAMES.DASHBOARD);
+function computeDashboardSummary_(spreadsheet) {
   var timezone = getBusinessTimezone_();
   var today = formatUtcToLocalDate_(new Date(), timezone);
 
@@ -34,22 +33,33 @@ function rebuildDashboard_(spreadsheet) {
   var weekRange = localDateWeekRange_(today);
   var monthPrefix = today.substring(0, 7);
 
-  var values = [
-    today,
-    todayAppointments.length,
-    todayAppointments.filter(function (a) { return a.status === "CONFIRMED"; }).length,
-    todayAppointments.filter(function (a) { return a.status === "COMPLETED"; }).length,
-    todayAppointments.filter(function (a) { return a.status === "CANCELLED"; }).length,
-    todayAppointments.filter(function (a) { return a.status === "NO_SHOW"; }).length,
-    appointments.filter(function (a) {
+  return {
+    date: today,
+    appointmentsToday: todayAppointments.length,
+    confirmedToday: todayAppointments.filter(function (a) { return a.status === "CONFIRMED"; }).length,
+    completedToday: todayAppointments.filter(function (a) { return a.status === "COMPLETED"; }).length,
+    cancelledToday: todayAppointments.filter(function (a) { return a.status === "CANCELLED"; }).length,
+    noShowToday: todayAppointments.filter(function (a) { return a.status === "NO_SHOW"; }).length,
+    upcomingAppointments: appointments.filter(function (a) {
       return a.localDate >= today && (a.status === "PENDING" || a.status === "CONFIRMED");
     }).length,
-    handoffs.filter(function (h) { return h.status === "OPEN"; }).length,
-    notifications.filter(function (n) { return n.status === "FAILED"; }).length,
-    customers.filter(function (c) { return c.status !== "INACTIVE"; }).length,
-    appointments.filter(function (a) { return a.localDate >= weekRange.start && a.localDate <= weekRange.end; }).length,
-    appointments.filter(function (a) { return typeof a.localDate === "string" && a.localDate.indexOf(monthPrefix) === 0; }).length,
-    new Date().toISOString(),
+    openHandoffs: handoffs.filter(function (h) { return h.status === "OPEN"; }).length,
+    failedNotifications: notifications.filter(function (n) { return n.status === "FAILED"; }).length,
+    activeCustomers: customers.filter(function (c) { return c.status !== "INACTIVE"; }).length,
+    appointmentsThisWeek: appointments.filter(function (a) { return a.localDate >= weekRange.start && a.localDate <= weekRange.end; }).length,
+    appointmentsThisMonth: appointments.filter(function (a) { return typeof a.localDate === "string" && a.localDate.indexOf(monthPrefix) === 0; }).length,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function rebuildDashboard_(spreadsheet) {
+  var sheet = spreadsheet.getSheetByName(SHEET_NAMES.DASHBOARD) || spreadsheet.insertSheet(SHEET_NAMES.DASHBOARD);
+  var summary = computeDashboardSummary_(spreadsheet);
+  var values = [
+    summary.date, summary.appointmentsToday, summary.confirmedToday, summary.completedToday,
+    summary.cancelledToday, summary.noShowToday, summary.upcomingAppointments, summary.openHandoffs,
+    summary.failedNotifications, summary.activeCustomers, summary.appointmentsThisWeek,
+    summary.appointmentsThisMonth, summary.updatedAt,
   ];
 
   sheet.clear();
@@ -58,6 +68,11 @@ function rebuildDashboard_(spreadsheet) {
   });
   sheet.getRange(1, 1, rows.length, 2).setValues(rows);
   sheet.setFrozenColumns(1);
+}
+
+/** Admin dashboard (Phase G) — same figures as the DASHBOARD sheet, returned directly as JSON. */
+function actionAdminGetDashboardSummary_() {
+  return computeDashboardSummary_(getSpreadsheet_());
 }
 
 function localDateWeekRange_(localDate) {

@@ -67,6 +67,8 @@ export const RATE_LIMITS = {
   availability: { limit: 60, windowMs: 60_000 } satisfies RateLimitConfig,
   /** Appointment mutations — create/cancel/reschedule. */
   mutation: { limit: 20, windowMs: 60_000 } satisfies RateLimitConfig,
+  /** Admin login attempts — deliberately strict, per IP, independent of the public API buckets. */
+  adminLogin: { limit: 5, windowMs: 5 * 60_000 } satisfies RateLimitConfig,
 };
 
 /** Test-only: clears all counters between test cases. */

@@ -219,4 +219,69 @@ describe("MockCrmClient", () => {
     const refetchedB = await crm.getConversation(convoB.conversationId);
     expect(refetchedB.state).toBe("IDLE");
   });
+
+  describe("admin (Phase G)", () => {
+    it("admin can create and deactivate a service; deactivation hides it from the public list", async () => {
+      const created = await crm.adminCreateService({ name: "Admin test service", price: 42, durationMinutes: 20 });
+      expect((await crm.listServices()).some((s) => s.serviceId === created.serviceId)).toBe(true);
+
+      await crm.adminUpdateService(created.serviceId, { active: false });
+      expect((await crm.listServices()).some((s) => s.serviceId === created.serviceId)).toBe(false);
+      expect((await crm.adminListServices()).some((s) => s.serviceId === created.serviceId)).toBe(true);
+    });
+
+    it("admin can create a barber and link it to a service via adminSetBarberServices", async () => {
+      const barber = await crm.adminCreateBarber({ name: "Admin test barber" });
+      expect((await crm.listBarbersForService("demo-service-1")).some((b) => b.barberId === barber.barberId)).toBe(false);
+
+      await crm.adminSetBarberServices(barber.barberId, ["demo-service-1"]);
+      expect((await crm.listBarbersForService("demo-service-1")).some((b) => b.barberId === barber.barberId)).toBe(true);
+    });
+
+    it("adminSetWorkingHours creates then updates in place (not duplicates) for the same barber+day", async () => {
+      const barber = await crm.adminCreateBarber({ name: "Schedule test barber" });
+      await crm.adminSetWorkingHours({ barberId: barber.barberId, dayOfWeek: 1, openingTime: "09:00", closingTime: "17:00" });
+      await crm.adminSetWorkingHours({ barberId: barber.barberId, dayOfWeek: 1, openingTime: "10:00", closingTime: "18:00" });
+      const rows = (await crm.adminListWorkingHours(barber.barberId)).filter((w) => w.dayOfWeek === 1);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].openingTime).toBe("10:00");
+    });
+
+    it("a break actually blocks availability for that barber", async () => {
+      await crm.adminSetBarberServices("demo-barber-1", ["demo-service-1"]);
+      const before = await crm.validateSlot({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: weekday, localStartTime: "12:00" });
+      expect(before.valid).toBe(true);
+
+      await crm.adminCreateBreak({ barberId: "demo-barber-1", recurring: true, dayOfWeek: weekdayOf(weekday), startTime: "12:00", endTime: "13:00", reason: "almuerzo" });
+      const during = await crm.validateSlot({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: weekday, localStartTime: "12:00" });
+      expect(during).toEqual({ valid: false, reason: "SLOT_UNAVAILABLE" });
+    });
+
+    it("a business-wide blocked slot (no barberId) blocks every barber, and deleting it frees the slot again", async () => {
+      const blocked = await crm.adminCreateBlockedSlot({ localDate: weekday, startTime: "14:00", endTime: "15:00", reason: "evento" });
+      const during = await crm.validateSlot({ serviceId: "demo-service-1", barberId: "demo-barber-2", localDate: weekday, localStartTime: "14:00" });
+      expect(during).toEqual({ valid: false, reason: "SLOT_UNAVAILABLE" });
+
+      await crm.adminDeleteBlockedSlot(blocked.blockedSlotId);
+      const after = await crm.validateSlot({ serviceId: "demo-service-1", barberId: "demo-barber-2", localDate: weekday, localStartTime: "14:00" });
+      expect(after.valid).toBe(true);
+    });
+
+    it("time off blocks an entire date range for that barber", async () => {
+      const dayAfter = (() => {
+        const [y, m, d] = weekday.split("-").map(Number);
+        const dt = new Date(Date.UTC(y, m - 1, d + 1));
+        const pad = (n: number) => String(n).padStart(2, "0");
+        return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}`;
+      })();
+      await crm.adminCreateTimeOff({ barberId: "demo-barber-1", startDate: weekday, endDate: dayAfter, allDay: true, reason: "vacaciones" });
+      const result = await crm.validateSlot({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: weekday, localStartTime: "09:00" });
+      expect(result).toEqual({ valid: false, reason: "SLOT_UNAVAILABLE" });
+    });
+  });
 });
+
+function weekdayOf(localDate: string): number {
+  const [y, m, d] = localDate.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}

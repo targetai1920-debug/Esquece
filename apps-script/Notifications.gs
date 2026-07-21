@@ -124,3 +124,17 @@ function actionCancelNotification_(payload) {
   var updated = updateRowById_(sheet, headers, "notificationId", notificationId, { status: "CANCELLED" });
   return { notification: updated };
 }
+
+/**
+ * Admin view (Phase G) — unlike actionListDueNotifications_ (only PENDING
+ * rows due now, for the Phase J cron), this returns notifications of any
+ * status for the dashboard/notifications screen, optionally filtered.
+ */
+function actionAdminListNotifications_(payload) {
+  var statusFilter = payload && payload.status ? String(payload.status) : null;
+  var rows = findRowsWhere_(getNotificationsSheet_(), function (row) {
+    return !statusFilter || row.status === statusFilter;
+  });
+  rows.sort(function (a, b) { return String(b.createdAt || "").localeCompare(String(a.createdAt || "")); });
+  return { notifications: rows };
+}

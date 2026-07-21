@@ -41,7 +41,7 @@ ever exceeded.
 | D | Apps Script booking engine (availability, locks, atomic create) | DONE |
 | E | Next.js CRM integration (CrmClient, AppsScriptCrmClient, MockCrmClient) | DONE |
 | F | Secure public booking API for the separate website (not the website itself) | DONE |
-| G | Admin dashboard | NOT STARTED |
+| G | Admin dashboard | DONE |
 | H | WhatsApp infrastructure (webhook, Meta client, dedup) | NOT STARTED |
 | I | Claude conversational agent | NOT STARTED |
 | J | Notifications and Calendar sync | NOT STARTED |
@@ -351,44 +351,157 @@ ever exceeded.
   files, **34/34 passed**, `npm run build` succeeded (all 13 public routes + health + dev page
   build correctly). Secret grep clean. `git status` reviewed before commit.
 
+- (Phase G) Apps Script additions: `Conversations.gs` (persistent WhatsApp conversation state +
+  message rows, optimistic version-conflict detection), `Handoffs.gs` (activate/resolve human
+  handoff, `listOpenHumanHandoffs`), `WebhookEvents.gs` (lock-guarded dedup registration —
+  built now, ahead of Phase H, specifically because the admin dashboard needs a
+  conversations/handoffs view; documented as a deliberate exception to the "don't build unused
+  API surface early" rule applied in Phases C/D). `Scheduling.gs`: admin CRUD for
+  `WORKING_HOURS`/`BREAKS`/`TIME_OFF`/`BLOCKED_SLOTS` (list/create/delete, soft-delete via
+  `active=false`). Admin CRUD added to `Services.gs` (`adminListServices`/`adminCreateService`/
+  `adminUpdateService`) and `Barbers.gs` (`adminListBarbers`/`adminCreateBarber`/
+  `adminUpdateBarber`/`adminSetBarberServices`/`adminGetBarberServices` — the last one added
+  specifically so the admin barber-edit screen can show which services are currently checked).
+  `Dashboard.gs` refactored: the `DASHBOARD` sheet-writing logic and a new
+  `actionAdminGetDashboardSummary_` JSON action now share one `computeDashboardSummary_`
+  function, so the admin dashboard's stat tiles and the spreadsheet's own summary tab can never
+  drift apart. `Notifications.gs` gained `actionAdminListNotifications_` (any status, not just
+  due-now) and `Conversations.gs` gained `actionAdminListConversations_`/
+  `actionAdminGetConversationMessages_`. All new actions registered in `Router.gs`'s one
+  `ACTION_HANDLERS_` object literal (same design as before — see Phase C's note on why).
+- (Phase G) Extended `Tests.gs` with a new non-destructive test covering the three new admin
+  listing actions (message history, conversation list, notification status filter) — cleans up
+  via `finally` like every other test here.
+- (Phase G) **Apps Script verification harness persisted to the repo** (previously ad hoc,
+  rebuilt each session): `apps-script/tests/run-tests.mjs` — concatenates every `.gs` file (same
+  file-order-matters reasoning as Phase C's `Router.gs` note), runs it in a Node `vm` context
+  against hand-built mocks of `SpreadsheetApp`/`PropertiesService`/`Utilities` (including a real,
+  not stubbed, `formatDate`/`computeDigest`/`base64EncodeWebSafe` implementation — a stubbed
+  `formatDate` was tried first and produced a corrupted local-date string that silently broke
+  `localDateWeekRange_`'s date parsing, caught by the harness itself)/`CacheService`/
+  `LockService`/`ContentService`/`Logger`/`Session`, then calls `setupCRM()` and
+  `runAllInternalTests()`. Wired up as `npm run test:apps-script`. **20/20 internal tests pass.**
+- (Phase G) Next.js `CrmClient` extended with the Phase G admin methods (services/barbers/
+  scheduling CRUD already added in earlier work this session, now completed with
+  `adminGetBarberServices`, `adminListNotifications`, `adminListConversations`,
+  `adminGetConversationMessages`, `adminGetDashboardSummary`) — implemented in both
+  `AppsScriptCrmClient` and `MockCrmClient`, with matching Zod response schemas
+  (`ConversationMessage`, `DashboardSummary` are new domain types). `MockCrmClient`'s
+  `appendConversationMessage` previously discarded the message entirely (a known Phase E
+  simplification, `void message`) — now actually persists rows and is exercised by
+  `applyConversationTurn`'s `inboundMessage`/`outboundMessage` handling, matching Apps Script's
+  `actionApplyConversationTurn_` behavior exactly.
+- (Phase G) Admin authentication: `src/lib/auth/password.ts` (bcryptjs, 12 salt rounds),
+  `src/lib/auth/session.ts` (`jose`-signed HS256 JWT session token, 8-hour expiry,
+  `ADMIN_SESSION_COOKIE` constant), `scripts/hash-password.mjs` (`npm run hash-password -- "..."`,
+  never logs the plaintext). `src/lib/auth/adminRoute.ts` — `adminApiRoute()` wrapper mirroring
+  `publicApiRoute()`: verifies the session cookie (401 `UNAUTHORIZED` if absent/invalid), checks
+  same-origin for mutation routes (`enforceOrigin`, CSRF defense in depth beyond the cookie's own
+  `SameSite=Lax`), uniform error/success envelope. `src/middleware.ts` — protects every
+  `/admin/*` page and `/api/admin/*` route (redirects to `/admin/login` for pages, 401 JSON for
+  API routes), except the login/logout routes and the login page itself.
+  `POST /api/admin/auth/login` (rate-limited 5/5min per IP via a new `RATE_LIMITS.adminLogin`
+  bucket, always runs `verifyPassword` even on an email mismatch so response timing doesn't leak
+  which part was wrong, sets the HTTP-only/`SameSite=Lax`/`Secure`-in-production cookie) and
+  `POST /api/admin/auth/logout` (clears it).
+- (Phase G) Admin API route layer — 24 route files under `src/app/api/admin/*`, every one calling
+  the SAME `getCrmClient()` the website/WhatsApp will use, so manual admin bookings/cancellations/
+  reschedules go through identical availability revalidation and locking:
+  `dashboard`, `appointments` (list with filters + manual create), `appointments/[id]/cancel`,
+  `appointments/[id]/reschedule`, `appointments/[id]/status` (confirm/complete/no-show —
+  deliberately excludes `CANCELLED`, which has its own route with proper reason/idempotency
+  handling), `availability` (POST, backs the manual-booking slot picker), `customers` (search),
+  `customers/[id]` (history), `services` (list/create), `services/[id]` (update), `barbers`
+  (list/create), `barbers/[id]` (update), `barbers/[id]/services` (get/set), `scheduling/
+  working-hours`, `scheduling/breaks(+/[id])`, `scheduling/time-off(+/[id])`,
+  `scheduling/blocked-slots(+/[id])`, `conversations` (list, `?handoffActiveOnly=`),
+  `conversations/[id]`, `conversations/[id]/messages`, `handoffs`, `handoffs/[id]/resolve`
+  (`reactivateBot` optional, matching WHATSAPP_AGENT_DESIGN.md's "no automatic reactivation"
+  rule), `notifications` (list, `?status=` filter), `config` (safe settings + CRM/provider
+  health — no secret ever included). Request bodies validated by `src/lib/http/
+  adminApiSchemas.ts` (parallel to Phase F's `publicApiSchemas.ts`, separate because it's a
+  different trust boundary — session-authenticated staff, not an approved website origin).
+- (Phase G) Admin dashboard UI — `src/app/admin/(auth)/login` (route group, no nav shell) and
+  `src/app/admin/(dashboard)/*` (shared layout with nav + logout, session read via
+  `next/headers` `cookies()`): dashboard home (stat tiles from `adminGetDashboardSummary`),
+  appointments (filterable table, manual-create form with a real availability slot picker,
+  confirm/complete/no-show/reschedule/cancel actions), customers (search + history panel),
+  services (create + activate/deactivate), barbers (create + activate/deactivate + a
+  checkbox-based service-eligibility editor), schedule (per-barber weekly hours, recurring/
+  one-time breaks, time off, business-wide or barber-specific blocked slots — all four in one
+  page), conversations (recent list + open-handoffs panel with resolve/reactivate-bot buttons +
+  a message-history viewer), notifications (status-filterable table), config (read-only business
+  settings + CRM/provider health, explicitly never a secret). Functional Tailwind styling
+  (dark-mode aware via the existing CSS variables/`dark:` classes) — not the final public
+  website's design system, this is an internal tool.
+- (Phase G) `tests/admin-api.test.ts` — 5 new integration tests calling the actual admin route
+  handler functions: no-cookie → 401, tampered-cookie → 401, valid session → dashboard summary
+  shape, mismatched-Origin mutation → 401 even with a valid session, and a full
+  create-then-list-then-update service flow proving the admin route and the public/WhatsApp
+  surface share one `CrmClient`.
+- (Phase G) **Found and fixed a real, non-obvious local-dev bug while verifying this end-to-end**:
+  Next.js's built-in `.env`/`.env.local` loader performs `$VARIABLE` expansion, and a bcrypt hash
+  is full of literal `$` characters (`$2b$12$...`) — an unescaped hash in a `.env.local` file gets
+  silently corrupted (each `$2b`, `$12`, etc. treated as an interpolation attempt), so every login
+  fails with a generic "incorrect password" and no indication the hash itself was mangled. This
+  only affects local `.env`-file-based development, not Render (which injects real process env
+  vars, never parsed through this expansion step) — but it would have cost a future session real
+  time to diagnose. Documented directly in `.env.example` next to `ADMIN_PASSWORD_HASH` with the
+  exact escaping needed (`\$2b\$12\$...`).
+- (Phase G) **Verified for real, not just unit-tested**: ran the actual dev server
+  (`CRM_PROVIDER=mock`, a locally-generated `ADMIN_PASSWORD_HASH`) and drove the complete admin
+  flow with `curl`: unauthenticated `/admin` → 307 redirect to `/admin/login`; login with wrong
+  env-mangled hash → confirmed the bug above, fixed, then login succeeded; all 9 authenticated
+  admin pages → 200; created a service via the admin API and confirmed it appeared in the admin
+  list; fetched a barber's linked services; ran a real availability lookup for a future weekday
+  and got the expected 16 half-hour slots; created a manual `ADMIN`-sourced appointment and
+  confirmed it appeared in the filtered appointments list with `status: CONFIRMED`; logged out;
+  confirmed the dashboard API then returned 401. No `.env.local` or other local-only file was
+  left in the working tree afterward.
+- (Phase G) Full quality gate: `npm run lint` clean, `npm run typecheck` clean, `npm test` → 5
+  files, **45/45 passed** (5 phone + 6 signing + 20 MockCrmClient + 9 public API + 5 admin API),
+  `npm run test:apps-script` → **20/20 passed**, `npm run build` succeeded (61 routes total,
+  including all 24 new `/api/admin/*` routes and 9 new `/admin/*` pages, correctly split between
+  static/dynamic). Secret grep clean (only match: a clearly-labeled non-real test fixture string
+  in `tests/admin-api.test.ts`). `git status` reviewed before commit.
+
 ## In-progress tasks
 
-None — Phases A through F are complete as of this update. Phase G (admin dashboard) has not
-been started.
+None — Phases A through G are complete as of this update.
 
 ## Remaining tasks
 
-Everything in Phases G–K — see the phase list in `PROJECT_PLAN.md`. Phase G specifically starts
-with: admin auth (env-based `ADMIN_EMAIL`/`ADMIN_PASSWORD_HASH`/`AUTH_SECRET`, session cookie via
-`jose`, login throttling), then the dashboard/appointments/customers/services/barbers/schedules
-screens, all calling the same `getCrmClient()` — including the admin CRUD actions
-(create/edit/activate services and barbers, schedule/break/time-off/block management) that Phase
-C deliberately deferred rather than build with no caller yet. Those Apps Script actions need to
-be added in Phase G alongside the admin screens that call them (same "don't build unused API
-surface early" reasoning already applied twice in this build).
+Everything in Phases H–K — see the phase list in `PROJECT_PLAN.md`: WhatsApp Cloud API
+infrastructure (webhook, Meta/Mock providers, persistent dedup), the Claude conversational agent
+(Anthropic/Mock providers, structured output, conversation state machine wiring, booking/cancel/
+reschedule flows, human handoff triggers, `/dev/whatsapp-simulator`), notifications/reminders
+(`/api/cron/notifications`, WhatsApp templates, optional Calendar sync), and production hardening
+(Render deployment docs, remaining setup guides, final cross-channel test suite, final report).
 
 ## Blockers
 
-None credential-related yet — Phases G onward remain credential-independent until Phase K's
-external configuration gate. The one real external step still pending since Phase B is an actual
-Apps Script deployment to confirm this session's mock-based verification holds up in the real
-environment — not a blocker to continuing, just an honestly-labeled gap (see
-`apps-script/README.md`).
+None credential-related yet — Phases H onward remain credential-independent until Phase K's
+external configuration gate, except that Phase H/I's *live* behavior (real Meta webhook traffic,
+real Claude calls) can only be verified against mocks until Meta/Anthropic credentials exist. The
+one real external step still pending since Phase B is an actual Apps Script deployment to confirm
+this session's mock/vm-harness-based verification holds up in the real Google environment — not a
+blocker to continuing, just an honestly-labeled gap (see `apps-script/README.md`).
 
 ## Latest commit
 
-Phase F committed and pushed — see the session's final report for the exact hash (this file is
-updated in the same commit as Phase F's code, so `git log -1` in the repo is the authoritative
+Phase G committed and pushed — see the session's final report for the exact hash (this file is
+updated in the same commit as Phase G's code, so `git log -1` in the repo is the authoritative
 source if this line is ever stale).
 
 ## Tests last executed
 
-Post-Phase-F (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 4
-files, **34/34 passed** (5 phone + 6 signing + 14 MockCrmClient + 9 public API), `npm run build`
-succeeded. Additionally verified live: ran `npm run dev` and drove the complete booking lifecycle
-via `curl` against the real running server (see the detailed bullet above) — this is real
-end-to-end proof for this repo's own API surface, though still bounded by `CRM_PROVIDER=mock`
-(no live Apps Script deployment exists to test against yet).
+Post-Phase-G (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 5
+files, **45/45 passed** (5 phone + 6 signing + 20 MockCrmClient + 9 public API + 5 admin API),
+`npm run test:apps-script` → **20/20 passed**, `npm run build` succeeded. Additionally verified
+live: ran `npm run dev` and drove the complete admin login → dashboard → CRUD → logout flow via
+`curl` against the real running server (see the detailed bullet above) — real end-to-end proof
+for this repo's own admin surface, still bounded by `CRM_PROVIDER=mock` (no live Apps Script
+deployment exists to test against yet).
 
 ## External configuration still required
 

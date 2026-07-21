@@ -67,6 +67,48 @@ var ACTION_HANDLERS_ = {
   markNotificationSent: actionMarkNotificationSent_,
   markNotificationFailed: actionMarkNotificationFailed_,
   cancelNotification: actionCancelNotification_,
+
+  // Conversations (Phase G, built ahead of Phase H which is their first consumer)
+  getOrCreateConversation: actionGetOrCreateConversation_,
+  getConversation: actionGetConversation_,
+  applyConversationTurn: actionApplyConversationTurn_,
+  resetConversation: actionResetConversation_,
+  appendConversationMessage: actionAppendConversationMessage_,
+
+  // Webhook dedup (Phase G, ahead of Phase H)
+  registerWebhookEvent: actionRegisterWebhookEvent_,
+  markWebhookEventProcessed: actionMarkWebhookEventProcessed_,
+  markWebhookEventFailed: actionMarkWebhookEventFailed_,
+
+  // Human handoff (Phase G, ahead of Phase H)
+  activateHumanHandoff: actionActivateHumanHandoff_,
+  resolveHumanHandoff: actionResolveHumanHandoff_,
+  listOpenHumanHandoffs: actionListOpenHumanHandoffs_,
+
+  // Admin CRUD (Phase G)
+  adminListServices: actionAdminListServices_,
+  adminCreateService: actionAdminCreateService_,
+  adminUpdateService: actionAdminUpdateService_,
+  adminListBarbers: actionAdminListBarbers_,
+  adminCreateBarber: actionAdminCreateBarber_,
+  adminUpdateBarber: actionAdminUpdateBarber_,
+  adminSetBarberServices: actionAdminSetBarberServices_,
+  adminGetBarberServices: actionAdminGetBarberServices_,
+  adminListWorkingHours: actionAdminListWorkingHours_,
+  adminSetWorkingHours: actionAdminSetWorkingHours_,
+  adminListBreaks: actionAdminListBreaks_,
+  adminCreateBreak: actionAdminCreateBreak_,
+  adminDeleteBreak: actionAdminDeleteBreak_,
+  adminListTimeOff: actionAdminListTimeOff_,
+  adminCreateTimeOff: actionAdminCreateTimeOff_,
+  adminDeleteTimeOff: actionAdminDeleteTimeOff_,
+  adminListBlockedSlots: actionAdminListBlockedSlots_,
+  adminCreateBlockedSlot: actionAdminCreateBlockedSlot_,
+  adminDeleteBlockedSlot: actionAdminDeleteBlockedSlot_,
+  adminListNotifications: actionAdminListNotifications_,
+  adminListConversations: actionAdminListConversations_,
+  adminGetConversationMessages: actionAdminGetConversationMessages_,
+  adminGetDashboardSummary: actionAdminGetDashboardSummary_,
 };
 
 function registerAction_(name, handler) {

@@ -115,6 +115,49 @@ export interface Promotion {
   updatedAt: string;
 }
 
+export interface WorkingHours {
+  workingHoursId: string;
+  barberId: string;
+  dayOfWeek: number; // 0 = Sunday ... 6 = Saturday
+  openingTime: string;
+  closingTime: string;
+  active: boolean;
+}
+
+export interface BreakRecord {
+  breakId: string;
+  barberId: string;
+  date: string | null;
+  dayOfWeek: number | null;
+  startTime: string;
+  endTime: string;
+  recurring: boolean;
+  reason: string;
+  active: boolean;
+}
+
+export interface TimeOffRecord {
+  timeOffId: string;
+  barberId: string;
+  startDate: string;
+  endDate: string;
+  startTime: string;
+  endTime: string;
+  allDay: boolean;
+  reason: string;
+  active: boolean;
+}
+
+export interface BlockedSlotRecord {
+  blockedSlotId: string;
+  barberId: string | null;
+  localDate: string;
+  startTime: string;
+  endTime: string;
+  reason: string;
+  active: boolean;
+}
+
 export interface Customer {
   customerId: string;
   name: string;
@@ -194,6 +237,21 @@ export interface Conversation {
   sessionExpiresAt: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ConversationMessage {
+  messageId: string;
+  externalMessageId: string | null;
+  conversationId: string;
+  customerId: string | null;
+  phoneE164: string;
+  direction: MessageDirection;
+  messageType: string;
+  body: string;
+  processingStatus: string;
+  receivedAt: string | null;
+  sentAt: string | null;
+  createdAt: string;
 }
 
 export interface HumanHandoff {
@@ -354,6 +412,22 @@ export interface CreateNotificationInput {
   payload?: Record<string, unknown>;
 }
 
+export interface DashboardSummary {
+  date: string;
+  appointmentsToday: number;
+  confirmedToday: number;
+  completedToday: number;
+  cancelledToday: number;
+  noShowToday: number;
+  upcomingAppointments: number;
+  openHandoffs: number;
+  failedNotifications: number;
+  activeCustomers: number;
+  appointmentsThisWeek: number;
+  appointmentsThisMonth: number;
+  updatedAt: string;
+}
+
 export interface CrmHealth {
   status: "ok" | "degraded";
   schemaVersion: string;
@@ -421,4 +495,99 @@ export interface CrmClient {
 
   createAuditEntry(input: { actorType: string; actorId?: string; action: string; entityType: string; entityId: string; before?: unknown; after?: unknown; metadata?: unknown }): Promise<void>;
   listAuditEntries(filter?: { entityType?: string; entityId?: string }): Promise<AuditEntry[]>;
+
+  // --- Admin (Phase G) ---
+  adminListServices(): Promise<Service[]>;
+  adminCreateService(input: AdminCreateServiceInput): Promise<Service>;
+  adminUpdateService(serviceId: string, patch: AdminUpdateServiceInput): Promise<Service>;
+
+  adminListBarbers(): Promise<Barber[]>;
+  adminCreateBarber(input: AdminCreateBarberInput): Promise<Barber>;
+  adminUpdateBarber(barberId: string, patch: AdminUpdateBarberInput): Promise<Barber>;
+  adminSetBarberServices(barberId: string, serviceIds: string[]): Promise<void>;
+  adminGetBarberServices(barberId: string): Promise<string[]>;
+
+  adminListWorkingHours(barberId?: string): Promise<WorkingHours[]>;
+  adminSetWorkingHours(input: AdminSetWorkingHoursInput): Promise<WorkingHours>;
+
+  adminListBreaks(barberId?: string): Promise<BreakRecord[]>;
+  adminCreateBreak(input: AdminCreateBreakInput): Promise<BreakRecord>;
+  adminDeleteBreak(breakId: string): Promise<void>;
+
+  adminListTimeOff(barberId?: string): Promise<TimeOffRecord[]>;
+  adminCreateTimeOff(input: AdminCreateTimeOffInput): Promise<TimeOffRecord>;
+  adminDeleteTimeOff(timeOffId: string): Promise<void>;
+
+  adminListBlockedSlots(barberId?: string): Promise<BlockedSlotRecord[]>;
+  adminCreateBlockedSlot(input: AdminCreateBlockedSlotInput): Promise<BlockedSlotRecord>;
+  adminDeleteBlockedSlot(blockedSlotId: string): Promise<void>;
+
+  adminListNotifications(status?: NotificationStatus): Promise<Notification[]>;
+  adminListConversations(handoffActiveOnly?: boolean): Promise<Conversation[]>;
+  adminGetConversationMessages(conversationId: string): Promise<ConversationMessage[]>;
+  adminGetDashboardSummary(): Promise<DashboardSummary>;
+}
+
+// --- Admin input types ---
+
+export interface AdminCreateServiceInput {
+  name: string;
+  description?: string;
+  price: number;
+  currency?: string;
+  durationMinutes: number;
+  bufferMinutes?: number;
+  category?: string;
+  imageUrl?: string;
+  active?: boolean;
+  displayOrder?: number;
+}
+export type AdminUpdateServiceInput = Partial<AdminCreateServiceInput>;
+
+export interface AdminCreateBarberInput {
+  name: string;
+  biography?: string;
+  specialties?: string;
+  photoUrl?: string;
+  phoneE164?: string;
+  active?: boolean;
+  publicBooking?: boolean;
+  displayOrder?: number;
+  calendarId?: string;
+}
+export type AdminUpdateBarberInput = Partial<AdminCreateBarberInput>;
+
+export interface AdminSetWorkingHoursInput {
+  barberId: string;
+  dayOfWeek: number;
+  openingTime: string;
+  closingTime: string;
+}
+
+export interface AdminCreateBreakInput {
+  barberId: string;
+  startTime: string;
+  endTime: string;
+  recurring: boolean;
+  dayOfWeek?: number;
+  date?: string;
+  reason?: string;
+}
+
+export interface AdminCreateTimeOffInput {
+  barberId: string;
+  startDate: string;
+  endDate: string;
+  allDay?: boolean;
+  startTime?: string;
+  endTime?: string;
+  reason?: string;
+}
+
+export interface AdminCreateBlockedSlotInput {
+  barberId?: string;
+  localDate: string;
+  startTime: string;
+  endTime: string;
+  reason?: string;
 }

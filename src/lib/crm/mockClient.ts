@@ -2,6 +2,14 @@ import { randomUUID } from "node:crypto";
 import { CrmError } from "./errors";
 import type {
   ActivateHandoffInput,
+  AdminCreateBarberInput,
+  AdminCreateBlockedSlotInput,
+  AdminCreateBreakInput,
+  AdminCreateServiceInput,
+  AdminCreateTimeOffInput,
+  AdminSetWorkingHoursInput,
+  AdminUpdateBarberInput,
+  AdminUpdateServiceInput,
   ApplyConversationTurnInput,
   Appointment,
   AppointmentStatus,
@@ -9,9 +17,12 @@ import type {
   AvailabilityInput,
   AvailableSlot,
   Barber,
+  BlockedSlotRecord,
+  BreakRecord,
   BusinessSettings,
   CancelAppointmentInput,
   Conversation,
+  ConversationMessage,
   ConversationState,
   CreateAppointmentInput,
   CreateAppointmentResult,
@@ -19,11 +30,13 @@ import type {
   CrmClient,
   CrmHealth,
   Customer,
+  DashboardSummary,
   Faq,
   GetAppointmentInput,
   HumanHandoff,
   MessageDirection,
   Notification,
+  NotificationStatus,
   Promotion,
   RegisterWebhookEventInput,
   RegisterWebhookEventResult,
@@ -31,8 +44,10 @@ import type {
   ResolveHandoffInput,
   Service,
   SlotValidationResult,
+  TimeOffRecord,
   UpsertCustomerInput,
   ValidateSlotInput,
+  WorkingHours,
 } from "./types";
 
 /**
@@ -105,7 +120,7 @@ function getTimezoneOffsetMinutes(date: Date, timezone: string): number {
   return (asUtc - date.getTime()) / 60000;
 }
 
-interface WorkingHoursRow { barberId: string | null; dayOfWeek: number; openingTime: string; closingTime: string; active: boolean }
+interface WorkingHoursRow { workingHoursId: string; barberId: string | null; dayOfWeek: number; openingTime: string; closingTime: string; active: boolean }
 interface BarberServiceRow { barberId: string; serviceId: string; active: boolean }
 
 export class MockCrmClient implements CrmClient {
@@ -114,9 +129,13 @@ export class MockCrmClient implements CrmClient {
   private barbers: Barber[] = [];
   private barberServices: BarberServiceRow[] = [];
   private workingHours: WorkingHoursRow[] = [];
+  private breaks: BreakRecord[] = [];
+  private timeOff: TimeOffRecord[] = [];
+  private blockedSlots: BlockedSlotRecord[] = [];
   private customers: Customer[] = [];
   private appointments: Appointment[] = [];
   private conversations: Conversation[] = [];
+  private conversationMessages: ConversationMessage[] = [];
   private handoffs: HumanHandoff[] = [];
   private notifications: Notification[] = [];
   private auditEntries: AuditEntry[] = [];
@@ -178,7 +197,10 @@ export class MockCrmClient implements CrmClient {
     ];
     this.barberServices = this.barbers.flatMap((b) => this.services.map((s) => ({ barberId: b.barberId, serviceId: s.serviceId, active: true })));
     this.workingHours = this.barbers.flatMap((b) =>
-      [1, 2, 3, 4, 5].map((day) => ({ barberId: b.barberId, dayOfWeek: day, openingTime: "08:00", closingTime: "16:00", active: true })),
+      [1, 2, 3, 4, 5].map((day) => ({
+        workingHoursId: `wh_${b.barberId}_${day}`, barberId: b.barberId, dayOfWeek: day,
+        openingTime: "08:00", closingTime: "16:00", active: true,
+      })),
     );
   }
 
@@ -253,6 +275,27 @@ export class MockCrmClient implements CrmClient {
     const workingIntervals = this.workingIntervalsFor(params.barberId, dayOfWeek);
     if (!workingIntervals.some((i) => i.start <= startMin && endMin <= i.end)) {
       return { valid: false, reason: "OUTSIDE_BUSINESS_HOURS" };
+    }
+
+    const breakIntervals = this.breaks
+      .filter((b) => b.active && b.barberId === params.barberId && (
+        (b.recurring && b.dayOfWeek === dayOfWeek) || (!b.recurring && b.date === params.localDate)
+      ))
+      .map((b) => ({ start: minutesFromMidnight(b.startTime), end: minutesFromMidnight(b.endTime) }));
+    if (breakIntervals.some((i) => overlaps(startMin, endMin, i.start, i.end))) {
+      return { valid: false, reason: "SLOT_UNAVAILABLE" };
+    }
+
+    const timeOffHit = this.timeOff.some((t) => t.active && t.barberId === params.barberId && params.localDate >= t.startDate && params.localDate <= t.endDate);
+    if (timeOffHit) {
+      return { valid: false, reason: "SLOT_UNAVAILABLE" };
+    }
+
+    const blockedIntervals = this.blockedSlots
+      .filter((b) => b.active && b.localDate === params.localDate && (!b.barberId || b.barberId === params.barberId))
+      .map((b) => ({ start: minutesFromMidnight(b.startTime), end: minutesFromMidnight(b.endTime) }));
+    if (blockedIntervals.some((i) => overlaps(startMin, endMin, i.start, i.end))) {
+      return { valid: false, reason: "SLOT_UNAVAILABLE" };
     }
 
     const appointmentIntervals = this.activeAppointmentIntervals(params.barberId, params.localDate, params.excludeAppointmentId);
@@ -665,8 +708,14 @@ export class MockCrmClient implements CrmClient {
     if (input.sessionExpiresAt) conversation.sessionExpiresAt = input.sessionExpiresAt;
     conversation.version += 1;
     conversation.updatedAt = new Date().toISOString();
-    if (input.inboundMessage) conversation.lastInboundMessageAt = conversation.updatedAt;
-    if (input.outboundMessage) conversation.lastOutboundMessageAt = conversation.updatedAt;
+    if (input.inboundMessage) {
+      conversation.lastInboundMessageAt = conversation.updatedAt;
+      await this.appendConversationMessage(conversation.conversationId, { direction: "INBOUND", messageType: input.inboundMessage.messageType, body: input.inboundMessage.body, externalMessageId: input.inboundMessage.externalMessageId });
+    }
+    if (input.outboundMessage) {
+      conversation.lastOutboundMessageAt = conversation.updatedAt;
+      await this.appendConversationMessage(conversation.conversationId, { direction: "OUTBOUND", messageType: input.outboundMessage.messageType, body: input.outboundMessage.body });
+    }
     return clone(conversation);
   }
 
@@ -681,8 +730,22 @@ export class MockCrmClient implements CrmClient {
   }
 
   async appendConversationMessage(conversationId: string, message: { direction: MessageDirection; messageType: string; body?: string; externalMessageId?: string }): Promise<void> {
-    this.findConversationOrThrow(conversationId); // ensures it exists; mock doesn't persist message rows separately
-    void message;
+    const conversation = this.findConversationOrThrow(conversationId);
+    const now = new Date().toISOString();
+    this.conversationMessages.push({
+      messageId: `msg_${randomUUID().replace(/-/g, "").slice(0, 20)}`,
+      externalMessageId: message.externalMessageId || null,
+      conversationId,
+      customerId: conversation.customerId || null,
+      phoneE164: conversation.phoneE164,
+      direction: message.direction,
+      messageType: message.messageType || "text",
+      body: message.body || "",
+      processingStatus: "PROCESSED",
+      receivedAt: message.direction === "INBOUND" ? now : null,
+      sentAt: message.direction === "OUTBOUND" ? now : null,
+      createdAt: now,
+    });
   }
 
   async registerWebhookEvent(input: RegisterWebhookEventInput): Promise<RegisterWebhookEventResult> {
@@ -794,4 +857,189 @@ export class MockCrmClient implements CrmClient {
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     );
   }
+
+  // --- Admin (Phase G) ---
+
+  async adminListServices(): Promise<Service[]> {
+    return clone(sortByDisplayOrder(this.services));
+  }
+  async adminCreateService(input: AdminCreateServiceInput): Promise<Service> {
+    const now = new Date().toISOString();
+    const service: Service = {
+      serviceId: `svc_${randomUUID().replace(/-/g, "").slice(0, 20)}`,
+      name: input.name, description: input.description || "", price: input.price,
+      currency: input.currency || "BOB", durationMinutes: input.durationMinutes, bufferMinutes: input.bufferMinutes || 0,
+      category: input.category || "", imageUrl: input.imageUrl || "", active: input.active ?? true,
+      displayOrder: input.displayOrder || 0, demo: false, createdAt: now, updatedAt: now,
+    };
+    this.services.push(service);
+    return clone(service);
+  }
+  async adminUpdateService(serviceId: string, patch: AdminUpdateServiceInput): Promise<Service> {
+    const service = this.services.find((s) => s.serviceId === serviceId);
+    if (!service) throw new CrmError("SERVICE_NOT_FOUND", "Servicio no encontrado.", false);
+    Object.assign(service, patch, { updatedAt: new Date().toISOString() });
+    return clone(service);
+  }
+
+  async adminListBarbers(): Promise<Barber[]> {
+    return clone(sortByDisplayOrder(this.barbers));
+  }
+  async adminCreateBarber(input: AdminCreateBarberInput): Promise<Barber> {
+    const now = new Date().toISOString();
+    const barber: Barber = {
+      barberId: `brb_${randomUUID().replace(/-/g, "").slice(0, 20)}`,
+      name: input.name, biography: input.biography || "", specialties: input.specialties || "",
+      photoUrl: input.photoUrl || "", phoneE164: input.phoneE164 || "", active: input.active ?? true,
+      publicBooking: input.publicBooking ?? true, displayOrder: input.displayOrder || 0,
+      calendarId: input.calendarId || "", demo: false, createdAt: now, updatedAt: now,
+    };
+    this.barbers.push(barber);
+    return clone(barber);
+  }
+  async adminUpdateBarber(barberId: string, patch: AdminUpdateBarberInput): Promise<Barber> {
+    const barber = this.barbers.find((b) => b.barberId === barberId);
+    if (!barber) throw new CrmError("BARBER_NOT_FOUND", "Barbero no encontrado.", false);
+    Object.assign(barber, patch, { updatedAt: new Date().toISOString() });
+    return clone(barber);
+  }
+  async adminSetBarberServices(barberId: string, serviceIds: string[]): Promise<void> {
+    this.barberServices = this.barberServices.filter((bs) => bs.barberId !== barberId);
+    serviceIds.forEach((serviceId) => this.barberServices.push({ barberId, serviceId, active: true }));
+  }
+  async adminGetBarberServices(barberId: string): Promise<string[]> {
+    return this.barberServices.filter((bs) => bs.barberId === barberId && bs.active).map((bs) => bs.serviceId);
+  }
+
+  async adminListWorkingHours(barberId?: string): Promise<WorkingHours[]> {
+    return clone(barberId ? this.workingHours.filter((w) => w.barberId === barberId) : this.workingHours) as WorkingHours[];
+  }
+  async adminSetWorkingHours(input: AdminSetWorkingHoursInput): Promise<WorkingHours> {
+    const existing = this.workingHours.find((w) => w.barberId === input.barberId && w.dayOfWeek === input.dayOfWeek);
+    if (existing) {
+      existing.openingTime = input.openingTime;
+      existing.closingTime = input.closingTime;
+      existing.active = true;
+      return clone(existing) as WorkingHours;
+    }
+    const created: WorkingHoursRow = {
+      workingHoursId: `wh_${randomUUID().replace(/-/g, "").slice(0, 20)}`,
+      barberId: input.barberId, dayOfWeek: input.dayOfWeek,
+      openingTime: input.openingTime, closingTime: input.closingTime, active: true,
+    };
+    this.workingHours.push(created);
+    return clone(created) as WorkingHours;
+  }
+
+  async adminListBreaks(barberId?: string): Promise<BreakRecord[]> {
+    return clone(barberId ? this.breaks.filter((b) => b.barberId === barberId) : this.breaks);
+  }
+  async adminCreateBreak(input: AdminCreateBreakInput): Promise<BreakRecord> {
+    const created: BreakRecord = {
+      breakId: `brk_${randomUUID().replace(/-/g, "").slice(0, 20)}`,
+      barberId: input.barberId, startTime: input.startTime, endTime: input.endTime,
+      recurring: input.recurring, dayOfWeek: input.recurring ? (input.dayOfWeek ?? null) : null,
+      date: input.recurring ? null : (input.date ?? null), reason: input.reason || "", active: true,
+    };
+    this.breaks.push(created);
+    return clone(created);
+  }
+  async adminDeleteBreak(breakId: string): Promise<void> {
+    const b = this.breaks.find((x) => x.breakId === breakId);
+    if (b) b.active = false;
+  }
+
+  async adminListTimeOff(barberId?: string): Promise<TimeOffRecord[]> {
+    return clone(barberId ? this.timeOff.filter((t) => t.barberId === barberId) : this.timeOff);
+  }
+  async adminCreateTimeOff(input: AdminCreateTimeOffInput): Promise<TimeOffRecord> {
+    const allDay = input.allDay ?? true;
+    const created: TimeOffRecord = {
+      timeOffId: `off_${randomUUID().replace(/-/g, "").slice(0, 20)}`,
+      barberId: input.barberId, startDate: input.startDate, endDate: input.endDate,
+      startTime: allDay ? "00:00" : (input.startTime || "00:00"),
+      endTime: allDay ? "23:59" : (input.endTime || "23:59"),
+      allDay, reason: input.reason || "", active: true,
+    };
+    this.timeOff.push(created);
+    return clone(created);
+  }
+  async adminDeleteTimeOff(timeOffId: string): Promise<void> {
+    const t = this.timeOff.find((x) => x.timeOffId === timeOffId);
+    if (t) t.active = false;
+  }
+
+  async adminListBlockedSlots(barberId?: string): Promise<BlockedSlotRecord[]> {
+    return clone(barberId ? this.blockedSlots.filter((b) => b.barberId === barberId) : this.blockedSlots);
+  }
+  async adminCreateBlockedSlot(input: AdminCreateBlockedSlotInput): Promise<BlockedSlotRecord> {
+    const created: BlockedSlotRecord = {
+      blockedSlotId: `blk_${randomUUID().replace(/-/g, "").slice(0, 20)}`,
+      barberId: input.barberId || null, localDate: input.localDate,
+      startTime: input.startTime, endTime: input.endTime, reason: input.reason || "", active: true,
+    };
+    this.blockedSlots.push(created);
+    return clone(created);
+  }
+  async adminDeleteBlockedSlot(blockedSlotId: string): Promise<void> {
+    const b = this.blockedSlots.find((x) => x.blockedSlotId === blockedSlotId);
+    if (b) b.active = false;
+  }
+
+  async adminListNotifications(status?: NotificationStatus): Promise<Notification[]> {
+    const rows = status ? this.notifications.filter((n) => n.status === status) : this.notifications;
+    return clone(rows.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+  }
+  async adminListConversations(handoffActiveOnly?: boolean): Promise<Conversation[]> {
+    const rows = handoffActiveOnly ? this.conversations.filter((c) => c.humanHandoffActive) : this.conversations;
+    return clone(rows.slice().sort((a, b) => (b.updatedAt || b.lastInboundMessageAt).localeCompare(a.updatedAt || a.lastInboundMessageAt)));
+  }
+  async adminGetConversationMessages(conversationId: string): Promise<ConversationMessage[]> {
+    this.findConversationOrThrow(conversationId);
+    return clone(
+      this.conversationMessages
+        .filter((m) => m.conversationId === conversationId)
+        .slice()
+        .sort((a, b) => (a.receivedAt || a.sentAt || "").localeCompare(b.receivedAt || b.sentAt || "")),
+    );
+  }
+
+  async adminGetDashboardSummary(): Promise<DashboardSummary> {
+    const today = new Date().toISOString().slice(0, 10);
+    const todayAppointments = this.appointments.filter((a) => a.localDate === today);
+    const monthPrefix = today.slice(0, 7);
+    const weekRange = localDateWeekRange(today);
+    return {
+      date: today,
+      appointmentsToday: todayAppointments.length,
+      confirmedToday: todayAppointments.filter((a) => a.status === "CONFIRMED").length,
+      completedToday: todayAppointments.filter((a) => a.status === "COMPLETED").length,
+      cancelledToday: todayAppointments.filter((a) => a.status === "CANCELLED").length,
+      noShowToday: todayAppointments.filter((a) => a.status === "NO_SHOW").length,
+      upcomingAppointments: this.appointments.filter((a) => a.localDate >= today && (a.status === "PENDING" || a.status === "CONFIRMED")).length,
+      openHandoffs: this.handoffs.filter((h) => h.status === "OPEN").length,
+      failedNotifications: this.notifications.filter((n) => n.status === "FAILED").length,
+      activeCustomers: this.customers.filter((c) => c.status !== "INACTIVE").length,
+      appointmentsThisWeek: this.appointments.filter((a) => a.localDate >= weekRange.start && a.localDate <= weekRange.end).length,
+      appointmentsThisMonth: this.appointments.filter((a) => a.localDate.startsWith(monthPrefix)).length,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+}
+
+function localDateWeekRange(localDate: string): { start: string; end: string } {
+  const [y, m, d] = localDate.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  const day = date.getDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const monday = new Date(date);
+  monday.setDate(date.getDate() + mondayOffset);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const fmt = (dt: Date) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+  return { start: fmt(monday), end: fmt(sunday) };
+}
+
+function sortByDisplayOrder<T extends { displayOrder: number }>(rows: T[]): T[] {
+  return rows.slice().sort((a, b) => a.displayOrder - b.displayOrder);
 }

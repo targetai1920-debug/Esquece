@@ -288,6 +288,87 @@ var INTERNAL_TESTS_ = [
       }
     },
   },
+  {
+    name: "conversation version conflict is detected, and webhook events are deduplicated",
+    run: function () {
+      var testPhone = "59100000005";
+      var conversation = actionGetOrCreateConversation_({ phoneE164: testPhone });
+      try {
+        actionApplyConversationTurn_({ conversationId: conversation.conversationId, expectedVersion: conversation.version, newState: "SELECTING_SERVICE" });
+        assertThrowsCode_(function () {
+          actionApplyConversationTurn_({ conversationId: conversation.conversationId, expectedVersion: conversation.version, newState: "SELECTING_BARBER" });
+        }, ERROR_CODES.CONVERSATION_CONFLICT, "stale expectedVersion");
+
+        var eventId = "test-dedup-event-" + testPhone;
+        var first = actionRegisterWebhookEvent_({ externalEventId: eventId, eventType: "message" });
+        var second = actionRegisterWebhookEvent_({ externalEventId: eventId, eventType: "message" });
+        if (first.isDuplicate !== false || second.isDuplicate !== true) {
+          throw new Error("expected first registration to be new and second to be flagged duplicate");
+        }
+      } finally {
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CONVERSATIONS, function (row) { return row.phoneE164 === testPhone; });
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CONVERSATION_MESSAGES, function (row) { return row.phoneE164 === testPhone; });
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.WEBHOOK_EVENTS, function (row) { return row.externalEventId === "test-dedup-event-" + testPhone; });
+      }
+    },
+  },
+  {
+    name: "admin can create and deactivate a service, and inactive services are hidden from the public list",
+    run: function () {
+      var created = actionAdminCreateService_({ name: "Prueba interna — servicio admin", price: 1, durationMinutes: 15 });
+      try {
+        var publicListBefore = actionListServices_().services;
+        if (!publicListBefore.some(function (s) { return s.serviceId === created.service.serviceId; })) {
+          throw new Error("newly-created active service should appear in the public list");
+        }
+        actionAdminUpdateService_({ serviceId: created.service.serviceId, active: false });
+        var publicListAfter = actionListServices_().services;
+        if (publicListAfter.some(function (s) { return s.serviceId === created.service.serviceId; })) {
+          throw new Error("deactivated service should no longer appear in the public list");
+        }
+      } finally {
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.SERVICES, function (row) { return row.serviceId === created.service.serviceId; });
+      }
+    },
+  },
+  {
+    name: "admin dashboard listings surface notifications, conversations and message history",
+    run: function () {
+      var testPhone = "59100000006";
+      var conversation = actionGetOrCreateConversation_({ phoneE164: testPhone });
+      var notification = createNotificationRow_({ type: "CONFIRMATION", customerId: null });
+      try {
+        actionApplyConversationTurn_({
+          conversationId: conversation.conversationId,
+          expectedVersion: conversation.version,
+          inboundMessage: { messageType: "text", body: "Hola" },
+        });
+
+        var messages = actionAdminGetConversationMessages_({ conversationId: conversation.conversationId }).messages;
+        if (messages.length !== 1 || messages[0].body !== "Hola" || messages[0].direction !== "INBOUND") {
+          throw new Error("expected one inbound message with the sent body");
+        }
+
+        var conversations = actionAdminListConversations_({}).conversations;
+        if (!conversations.some(function (c) { return c.conversationId === conversation.conversationId; })) {
+          throw new Error("adminListConversations should include the test conversation");
+        }
+
+        var pendingNotifications = actionAdminListNotifications_({ status: "PENDING" }).notifications;
+        if (!pendingNotifications.some(function (n) { return n.notificationId === notification.notificationId; })) {
+          throw new Error("adminListNotifications({status: PENDING}) should include the test notification");
+        }
+        var sentNotifications = actionAdminListNotifications_({ status: "SENT" }).notifications;
+        if (sentNotifications.some(function (n) { return n.notificationId === notification.notificationId; })) {
+          throw new Error("adminListNotifications({status: SENT}) should not include a PENDING notification");
+        }
+      } finally {
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CONVERSATIONS, function (row) { return row.phoneE164 === testPhone; });
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CONVERSATION_MESSAGES, function (row) { return row.phoneE164 === testPhone; });
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.notificationId === notification.notificationId; });
+      }
+    },
+  },
 ];
 
 /**
