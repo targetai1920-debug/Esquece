@@ -42,7 +42,7 @@ ever exceeded.
 | E | Next.js CRM integration (CrmClient, AppsScriptCrmClient, MockCrmClient) | DONE |
 | F | Secure public booking API for the separate website (not the website itself) | DONE |
 | G | Admin dashboard | DONE |
-| H | WhatsApp infrastructure (webhook, Meta client, dedup) | NOT STARTED |
+| H | WhatsApp infrastructure (webhook, Meta client, dedup) | DONE |
 | I | Claude conversational agent | NOT STARTED |
 | J | Notifications and Calendar sync | NOT STARTED |
 | K | Production hardening | NOT STARTED |
@@ -465,43 +465,104 @@ ever exceeded.
   static/dynamic). Secret grep clean (only match: a clearly-labeled non-real test fixture string
   in `tests/admin-api.test.ts`). `git status` reviewed before commit.
 
+- (Phase H) `src/lib/whatsapp/types.ts` — `WhatsAppProvider` interface (`sendText`,
+  `sendInteractiveButtons`, `sendInteractiveList`, `sendTemplate`, `markAsRead`), mirroring the
+  `CrmClient` pattern: one interface, one mock, one real implementation, never a direct Graph API
+  call scattered across call sites.
+- (Phase H) `src/lib/whatsapp/mockProvider.ts` — `MockWhatsAppProvider`: records every send
+  in-memory (`sentMessages`, inspectable by tests and the future `/dev/whatsapp-simulator`), plus
+  a `failNextSend` one-shot hook for simulating a WhatsApp outage.
+- (Phase H) `src/lib/whatsapp/metaProvider.ts` — `MetaWhatsAppProvider`: the only module that
+  calls `graph.facebook.com` and holds `WHATSAPP_ACCESS_TOKEN` (via `getMetaConfig()`, Phase E).
+  Maps Meta's error `code: 131047` (outside the 24-hour customer-initiated window — requires an
+  approved template) onto a typed `requiresTemplate` flag per WHATSAPP_AGENT_DESIGN.md §9; never
+  logs the access token.
+- (Phase H) `src/lib/whatsapp/factory.ts` — `getWhatsAppClient()`, same production-safety pattern
+  as `lib/crm/factory.ts`: refuses `WHATSAPP_PROVIDER=mock` in production unless
+  `ALLOW_UNSAFE_MOCKS_IN_PRODUCTION=true` is also explicitly set.
+- (Phase H) `src/lib/whatsapp/signature.ts` — `verifyMetaSignature` (HMAC-SHA256 over the raw
+  body, constant-time compare via `crypto.timingSafeEqual`) and `verifyTokenMatches` (constant-time
+  verify-token comparison for the `GET` handshake). No environment flag disables either check.
+- (Phase H) `src/lib/whatsapp/webhookSchemas.ts` — Zod schemas for the Meta webhook body: one
+  permissive `inboundMessageSchema` (not a discriminated union — Meta's `type` covers many values
+  this codebase doesn't specifically parse; `text`/`interactive` are simply absent for those, not
+  a validation error) plus `messageStatusSchema` and the enclosing `webhookPayloadSchema`.
+  `messageTextBody`/`interactiveReplyId`/`findContactName` helpers.
+- (Phase H) `src/app/api/whatsapp/webhook/route.ts` — the direct Next.js webhook (never Apps
+  Script, per master spec §12). `GET`: `hub.mode`/`hub.verify_token`/`hub.challenge` handshake,
+  constant-time token comparison, `403` on mismatch. `POST`: reads the raw body as text *before*
+  any JSON parsing, verifies `X-Hub-Signature-256` against it, rejects with `401` before parsing
+  a single byte of JSON on failure; parses and validates structure (`400` on either failure);
+  iterates every `entry[].changes[].value`, handling `messages[]` and `statuses[]` independently
+  with per-event try/catch (one bad event never drops the rest of the batch); always returns
+  `200` once the payload is structurally accepted, even if an individual event's processing
+  failed, matching Meta's aggressive-retry behavior. Each inbound message: dedups via
+  `registerWebhookEvent` (lock-guarded in Apps Script, from Phase G), normalizes the phone via the
+  existing `normalizeWaId`, upserts the customer, gets-or-creates the conversation, and appends
+  the inbound message — unsupported message types (stickers, images, etc.) are still recorded
+  (with `messageType` set to whatever Meta sent), never silently dropped. **Scope note**:
+  composing and sending an automated reply is Phase I (the Claude agent) — this route's job is
+  the infrastructure guarantee that every inbound event is verified, deduplicated, and persisted
+  exactly once, which Phase I builds directly on top of.
+- (Phase H) `tests/whatsapp-providers.test.ts` (11 tests: signature accept/reject-tampered/
+  reject-missing/reject-malformed/reject-wrong-secret, verify-token match/mismatch/null, mock
+  provider recording + one-shot failure + interactive body formatting) and
+  `tests/whatsapp-webhook.test.ts` (10 tests calling the actual route handlers: GET
+  accept/reject, POST reject-no-signature/reject-invalid-signature/reject-invalid-JSON, a full
+  valid text-message flow proving the customer+conversation+message side effects, duplicate
+  delivery processed exactly once, a status-only payload, an unsupported message type recorded
+  without throwing, and multiple messages+statuses in one payload all processed).
+- (Phase H) **Verified for real, not just unit-tested**: ran the actual dev server
+  (`WHATSAPP_PROVIDER=meta` with locally-generated fake credentials — no real Meta account
+  involved) and drove both the `GET` handshake (correct token → 200 + echoed challenge; wrong
+  token → 403) and the `POST` path (computed a real HMAC-SHA256 signature over an actual request
+  body with Node's `crypto`, exactly as Meta would, and confirmed: no signature → 401, valid
+  signature + valid payload → 200) against the real running Next.js server.
+- (Phase H) Full quality gate: `npm run lint` clean, `npm run typecheck` clean, `npm test` → 7
+  files, **66/66 passed** (previous 45 + 11 provider + 10 webhook), `npm run test:apps-script` →
+  **20/20 passed** (unchanged — no Apps Script changes this phase), `npm run build` succeeded
+  (`/api/whatsapp/webhook` present as a dynamic route). Secret grep clean. `git status` reviewed
+  before commit.
+
 ## In-progress tasks
 
-None — Phases A through G are complete as of this update.
+None — Phases A through H are complete as of this update.
 
 ## Remaining tasks
 
-Everything in Phases H–K — see the phase list in `PROJECT_PLAN.md`: WhatsApp Cloud API
-infrastructure (webhook, Meta/Mock providers, persistent dedup), the Claude conversational agent
-(Anthropic/Mock providers, structured output, conversation state machine wiring, booking/cancel/
-reschedule flows, human handoff triggers, `/dev/whatsapp-simulator`), notifications/reminders
-(`/api/cron/notifications`, WhatsApp templates, optional Calendar sync), and production hardening
-(Render deployment docs, remaining setup guides, final cross-channel test suite, final report).
+Everything in Phases I–K — see the phase list in `PROJECT_PLAN.md`: the Claude conversational
+agent (Anthropic/Mock providers, structured output, conversation state machine wiring, booking/
+cancel/reschedule flows built on top of Phase H's webhook, human handoff triggers,
+`/dev/whatsapp-simulator`), notifications/reminders (`/api/cron/notifications`, WhatsApp
+templates, optional Calendar sync), and production hardening (Render deployment docs, remaining
+setup guides, final cross-channel test suite, final report).
 
 ## Blockers
 
-None credential-related yet — Phases H onward remain credential-independent until Phase K's
+None credential-related yet — Phases I onward remain credential-independent until Phase K's
 external configuration gate, except that Phase H/I's *live* behavior (real Meta webhook traffic,
-real Claude calls) can only be verified against mocks until Meta/Anthropic credentials exist. The
-one real external step still pending since Phase B is an actual Apps Script deployment to confirm
-this session's mock/vm-harness-based verification holds up in the real Google environment — not a
-blocker to continuing, just an honestly-labeled gap (see `apps-script/README.md`).
+real Claude calls) can only be verified against mocks/synthetic signed requests until Meta/
+Anthropic credentials exist (which is exactly what this phase's verification honestly represents
+— see the bullet above). The one real external step still pending since Phase B is an actual Apps
+Script deployment to confirm this session's mock/vm-harness-based verification holds up in the
+real Google environment — not a blocker to continuing, just an honestly-labeled gap (see
+`apps-script/README.md`).
 
 ## Latest commit
 
-Phase G committed and pushed — see the session's final report for the exact hash (this file is
-updated in the same commit as Phase G's code, so `git log -1` in the repo is the authoritative
+Phase H committed and pushed — see the session's final report for the exact hash (this file is
+updated in the same commit as Phase H's code, so `git log -1` in the repo is the authoritative
 source if this line is ever stale).
 
 ## Tests last executed
 
-Post-Phase-G (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 5
-files, **45/45 passed** (5 phone + 6 signing + 20 MockCrmClient + 9 public API + 5 admin API),
-`npm run test:apps-script` → **20/20 passed**, `npm run build` succeeded. Additionally verified
-live: ran `npm run dev` and drove the complete admin login → dashboard → CRUD → logout flow via
-`curl` against the real running server (see the detailed bullet above) — real end-to-end proof
-for this repo's own admin surface, still bounded by `CRM_PROVIDER=mock` (no live Apps Script
-deployment exists to test against yet).
+Post-Phase-H (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 7
+files, **66/66 passed** (5 phone + 6 signing + 20 MockCrmClient + 9 public API + 5 admin API + 11
+WhatsApp provider + 10 WhatsApp webhook), `npm run test:apps-script` → **20/20 passed**, `npm run
+build` succeeded. Additionally verified live: ran `npm run dev` and drove the Meta webhook's `GET`
+handshake and a real-HMAC-signed `POST` against the real running server (see the detailed bullet
+above) — real end-to-end proof for this repo's own webhook surface, using locally-generated fake
+Meta credentials (no real Meta account/traffic involved yet).
 
 ## External configuration still required
 

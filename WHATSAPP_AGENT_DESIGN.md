@@ -11,6 +11,12 @@ data carries over, only the infrastructure pattern.
 > sheets, reached through the Apps Script API. The webhook itself (verification, HMAC, parsing)
 > still lives in Next.js — that never depended on Postgres and is unchanged.
 
+> Implemented 2026-07-21 (Phase H): §1–§3 (webhook route, phone normalization, dedup) are built
+> and tested — see `IMPLEMENTATION_STATUS.md`'s Phase H entry for exactly what was verified and
+> how. §4 onward (conversation state machine wiring, the actual booking/cancel/reschedule flows,
+> human handoff triggers, Claude integration) is Phase I, not yet built — this document describes
+> the target design for both, not a claim that all of it exists yet.
+
 ## 1. Webhook endpoints (`src/app/api/whatsapp/webhook/route.ts`)
 
 **`GET`** — Meta verification: compare `hub.mode === "subscribe"` and `hub.verify_token` against
