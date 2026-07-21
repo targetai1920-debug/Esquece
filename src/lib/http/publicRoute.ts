@@ -59,12 +59,32 @@ export function publicApiPreflight() {
   };
 }
 
-/** Parses and validates a JSON body against a Zod schema, throwing a safe CrmError on failure. */
+/** No booking-related payload this API accepts is anywhere near this size — a generous ceiling against oversized/abusive request bodies (Phase K hardening). */
+export const MAX_REQUEST_BODY_BYTES = 100_000;
+
+/** Parses and validates a JSON body against a Zod schema, throwing a safe CrmError on failure. Enforces MAX_REQUEST_BODY_BYTES before ever attempting to parse. */
 export async function parseJsonBody<T>(request: NextRequest, schema: { parse: (v: unknown) => T }): Promise<T> {
   const { CrmError } = await import("@/lib/crm/errors");
+
+  const contentLength = request.headers.get("content-length");
+  if (contentLength && Number(contentLength) > MAX_REQUEST_BODY_BYTES) {
+    throw new CrmError("INVALID_REQUEST", "El cuerpo de la solicitud es demasiado grande.", false);
+  }
+
+  let rawText: string;
+  try {
+    rawText = await request.text();
+  } catch {
+    throw new CrmError("INVALID_REQUEST", "El cuerpo de la solicitud no es JSON válido.", false);
+  }
+  // Belt-and-suspenders — Content-Length can be absent or spoofed; this checks the bytes actually received.
+  if (rawText.length > MAX_REQUEST_BODY_BYTES) {
+    throw new CrmError("INVALID_REQUEST", "El cuerpo de la solicitud es demasiado grande.", false);
+  }
+
   let raw: unknown;
   try {
-    raw = await request.json();
+    raw = JSON.parse(rawText);
   } catch {
     throw new CrmError("INVALID_REQUEST", "El cuerpo de la solicitud no es JSON válido.", false);
   }

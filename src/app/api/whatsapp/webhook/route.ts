@@ -32,12 +32,23 @@ export async function GET(request: NextRequest) {
   return new NextResponse("Forbidden", { status: 403 });
 }
 
+/** Meta batches multiple entries/messages per delivery — a generous ceiling above the public API's, still bounded against an abusive/oversized payload (Phase K hardening). */
+const MAX_WEBHOOK_BODY_BYTES = 250_000;
+
 export async function POST(request: NextRequest) {
   const config = getMetaWebhookConfig();
+
+  const contentLength = request.headers.get("content-length");
+  if (contentLength && Number(contentLength) > MAX_WEBHOOK_BODY_BYTES) {
+    return new NextResponse("Payload too large", { status: 413 });
+  }
 
   // Raw body first — the signature is computed over these exact bytes, not
   // a re-serialized parse of them (WHATSAPP_AGENT_DESIGN.md §1).
   const rawBody = await request.text();
+  if (rawBody.length > MAX_WEBHOOK_BODY_BYTES) {
+    return new NextResponse("Payload too large", { status: 413 });
+  }
   const signature = request.headers.get("x-hub-signature-256");
 
   if (!verifyMetaSignature(rawBody, signature, config.appSecret)) {

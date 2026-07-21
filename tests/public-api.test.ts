@@ -96,6 +96,18 @@ describe("public booking API", () => {
     expect(body.error.code).toBe("INVALID_PAYLOAD");
   });
 
+  it("rejects an oversized request body before ever parsing it (Phase K request-size limit)", async () => {
+    const hugeNotes = "x".repeat(200_000);
+    const response = await postAvailability(
+      jsonRequest("/api/public/availability", { serviceId: "demo-service-1", localDate: weekday, anyBarber: true, customerNotes: hugeNotes }),
+      { params: Promise.resolve({}) },
+    );
+    expect(response.status).toBe(400);
+    const body = await readJson(response);
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe("INVALID_REQUEST");
+  });
+
   it("full booking lifecycle: create, reject duplicate slot, get by reference requires token, reschedule, cancel", async () => {
     const createBody = {
       idempotencyKey: "api-test-key-1",

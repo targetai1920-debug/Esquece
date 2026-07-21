@@ -45,7 +45,7 @@ ever exceeded.
 | H | WhatsApp infrastructure (webhook, Meta client, dedup) | DONE |
 | I | Claude conversational agent | DONE |
 | J | Notifications and Calendar sync | DONE |
-| K | Production hardening | NOT STARTED |
+| K | Production hardening | DONE |
 
 ## Completed tasks
 
@@ -706,42 +706,83 @@ ever exceeded.
   succeeded (`/api/cron/notifications` present as a dynamic route). Secret grep clean. `git
   status` reviewed before commit.
 
+- (Phase K) **Request-size limits**: `lib/http/publicRoute.ts`'s `parseJsonBody` now checks
+  `Content-Length` and the actual received body length against a 100KB ceiling
+  (`MAX_REQUEST_BODY_BYTES`) before ever parsing JSON — covers every `/api/public/*` and
+  `/api/admin/*` route, since they all share this one helper. The WhatsApp webhook (which reads
+  its raw body directly, not through this helper) got its own 250KB ceiling (Meta batches
+  multiple entries per delivery) in `src/app/api/whatsapp/webhook/route.ts`. New test in
+  `tests/public-api.test.ts` proves an oversized body is rejected with `INVALID_REQUEST` before
+  parsing.
+- (Phase K) **Error boundaries**: `src/app/error.tsx` (route-segment errors) and
+  `src/app/global-error.tsx` (root-layout errors) — a safe, generic Spanish message and a retry
+  button instead of a blank screen or a raw stack trace, per master spec's "error boundaries."
+- (Phase K) **Cross-channel automated test suite** (`tests/cross-channel.test.ts`, 6 tests) — the
+  automated proof of this project's central claim, driving the real `/api/public/*` route
+  handlers, the real `/api/admin/*` route handlers, and the real conversation orchestrator against
+  one shared `MockCrmClient` instance: a website booking blocks that slot for WhatsApp; a WhatsApp
+  booking blocks that slot for the website API; two channels racing for the identical slot leave
+  exactly one appointment and the loser is safely rejected/re-offered; an admin-blocked slot is
+  rejected identically from the website API, WhatsApp, and a direct create call; an admin
+  cancellation releases the slot for the website API; a service duration change is reflected
+  identically (the exact same `getAvailability()` result) in both the website API and WhatsApp.
+- (Phase K) **Dependency review**: `npm audit` — one moderate advisory in `postcss`, vendored
+  inside `next`'s own dependency tree, not a direct dependency. The only automatic fix available
+  downgrades Next.js to `9.3.3` (a large breaking regression, far riskier than the advisory
+  itself, which needs attacker-controlled CSS input this application never accepts from a user).
+  Left unfixed pending an upstream Next.js patch — documented in `LIMITATIONS.md`, not silently
+  ignored.
+- (Phase K) **Secret review**: full-repo grep (not just this phase's diff) for
+  `CRM_API_KEY`/`CRM_SIGNING_SECRET`/`META_APP_SECRET`/`WHATSAPP_ACCESS_TOKEN`/
+  `ANTHROPIC_API_KEY`/`AUTH_SECRET`/`ADMIN_PASSWORD_HASH`/`CRON_SECRET`-shaped high-entropy values
+  across every `.ts`/`.tsx`/`.gs`/`.md`/`.mjs`/`.json` file, plus a check for accidentally-tracked
+  `.env*` files and the `.clasp.json.example` placeholder. Only match: two clearly-labeled,
+  non-real test fixture strings (`tests/admin-api.test.ts`, `tests/cross-channel.test.ts`).
+- (Phase K) Remaining documentation: `META_SETUP.md`, `ANTHROPIC_SETUP.md`, `RENDER_SETUP.md`,
+  `DEPLOYMENT.md`, `TESTING.md`, `OPERATIONS.md`, `LIMITATIONS.md` — all new. Every setup guide
+  gives exact steps with no real values, an explicit "what verified actually means" section, and
+  a troubleshooting section for the specific failure modes this codebase can produce (e.g.
+  `TEMPLATE_REQUIRED`, `getMetaConfig() called but WHATSAPP_PROVIDER is not 'meta'`).
+- (Phase K) Full quality gate: `npm run lint` clean, `npm run typecheck` clean, `npm test` → 10
+  files, **88/88 passed** (previous 81 + 6 cross-channel + 1 request-size-limit test added to
+  `public-api.test.ts`), `npm run test:apps-script` → **22/22 passed** (unchanged — no Apps
+  Script changes this phase), `npm run build` succeeded. Secret grep clean. `git status`
+  reviewed before commit.
+
 ## In-progress tasks
 
-None — Phases A through J are complete as of this update.
+None — Phases A through K are complete as of this update.
 
 ## Remaining tasks
 
-Phase K (production hardening) — see `PROJECT_PLAN.md`: remaining setup guides (`META_SETUP.md`,
-`ANTHROPIC_SETUP.md`, `RENDER_SETUP.md`, `DEPLOYMENT.md`, `TESTING.md`, `OPERATIONS.md`,
-`LIMITATIONS.md`), a dependency/secret review pass, the final cross-channel automated test suite
-proving the separate website/WhatsApp/admin genuinely share one CRM (concurrent booking, admin
-block, cancellation/reschedule sync, service-duration-change sync), and the final report.
+None credential-independent. Everything that remains requires external credentials, a deployed
+URL, or official client business data — see `CLIENT_INFORMATION_REQUIRED.md` and the final
+report for the exact, itemized list (Google Spreadsheet ID + Apps Script deployment, Render
+deployment + real environment variables, the separate website's real origin, Meta credentials +
+approved templates, an Anthropic API key, and Esquece's real services/prices/barbers/schedules/
+address/policies/photos).
 
 ## Blockers
 
-None credential-related yet — Phase K remains credential-independent until the final external
-configuration gate. This phase's Calendar-sync and cron-processor verification is honestly bounded
-by mocks/no real Google Calendar or Meta account; the one real external step still pending since
-Phase B is an actual Apps Script deployment to confirm this session's mock/vm-harness-based
-verification (now including the `CalendarApp` mock) holds up in the real Google environment — not
-a blocker to continuing, just an honestly-labeled gap (see `apps-script/README.md`).
+Every remaining blocker is external-credential-related — see the list immediately above and the
+final report. Nothing in this codebase is blocked on more code being written; every phase A
+through K is complete, tested (with mocks/synthetic requests where a real external system isn't
+available), and documented.
 
 ## Latest commit
 
-Phase J committed and pushed — see the session's final report for the exact hash (this file is
-updated in the same commit as Phase J's code, so `git log -1` in the repo is the authoritative
+Phase K committed and pushed — see the session's final report for the exact hash (this file is
+updated in the same commit as Phase K's code, so `git log -1` in the repo is the authoritative
 source if this line is ever stale).
 
 ## Tests last executed
 
-Post-Phase-J (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 9
-files, **81/81 passed** (5 phone + 6 signing + 20 MockCrmClient + 9 public API + 5 admin API + 11
-WhatsApp provider + 10 WhatsApp webhook + 8 conversation orchestrator + 7 notifications
-processor), `npm run test:apps-script` → **22/22 passed**, `npm run build` succeeded.
-Additionally verified live: ran `npm run dev` and drove the cron notification endpoint's auth
-gate and a real booking → notification → safe-template-required-failure flow via `curl` against
-the real running server (see the detailed bullet above).
+Post-Phase-K (this session, the final phase of this build): `npm run lint` clean, `npm run
+typecheck` clean, `npm test` → 10 files, **88/88 passed** (5 phone + 6 signing + 20 MockCrmClient
++ 10 public API + 5 admin API + 11 WhatsApp provider + 10 WhatsApp webhook + 8 conversation
+orchestrator + 7 notifications processor + 6 cross-channel), `npm run test:apps-script` →
+**22/22 passed**, `npm run build` succeeded. See `TESTING.md` for what each suite covers and the
+verification discipline behind the Apps Script harness specifically.
 
 ## External configuration still required
 
