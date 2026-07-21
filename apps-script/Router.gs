@@ -70,6 +70,7 @@ var ACTION_HANDLERS_ = {
 
   // Conversations (Phase G, built ahead of Phase H which is their first consumer)
   getOrCreateConversation: actionGetOrCreateConversation_,
+  findConversationByPhone: actionFindConversationByPhone_,
   getConversation: actionGetConversation_,
   applyConversationTurn: actionApplyConversationTurn_,
   resetConversation: actionResetConversation_,

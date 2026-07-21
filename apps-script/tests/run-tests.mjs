@@ -269,6 +269,45 @@ const Session = {
   },
 };
 
+// Minimal in-memory CalendarApp mock — enough to exercise Calendar.gs's
+// create/update/cancel-event lifecycle without a real Google Calendar.
+const mockCalendarEvents = new Map();
+const mockCalendars = new Map();
+function makeMockEvent(id, title, startDate, endDate, options) {
+  const event = {
+    id,
+    title,
+    startDate,
+    endDate,
+    description: options && options.description,
+    deleted: false,
+    getId() { return event.id; },
+    setTime(newStart, newEnd) { event.startDate = newStart; event.endDate = newEnd; },
+    deleteEvent() { event.deleted = true; },
+  };
+  return event;
+}
+const CalendarApp = {
+  getCalendarById(id) {
+    if (id === "invalid-calendar-id-for-test") return null;
+    if (!mockCalendars.has(id)) {
+      mockCalendars.set(id, {
+        id,
+        createEvent(title, startDate, endDate, options) {
+          const event = makeMockEvent(`mock-event-${mockCalendarEvents.size + 1}`, title, startDate, endDate, options);
+          mockCalendarEvents.set(event.id, event);
+          return event;
+        },
+        getEventById(eventId) {
+          const event = mockCalendarEvents.get(eventId);
+          return event && !event.deleted ? event : null;
+        },
+      });
+    }
+    return mockCalendars.get(id);
+  },
+};
+
 const context = {
   SpreadsheetApp,
   PropertiesService,
@@ -278,6 +317,7 @@ const context = {
   ContentService,
   Logger,
   Session,
+  CalendarApp,
   console,
   Date,
   JSON,

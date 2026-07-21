@@ -228,9 +228,10 @@ necessarily the final customer-facing copy.
 | `listDueNotifications` | Implemented (Phase D) |
 | `claimNotification` | Implemented (Phase D) — `LockService`-guarded PENDING→PROCESSING transition |
 | `markNotificationSent` | Implemented (Phase D) |
-| `markNotificationFailed` | Implemented (Phase D) |
+| `markNotificationFailed` | Implemented (Phase D) — Phase J added an optional `retryAfterMinutes` (returns the notification to `PENDING` with a future `scheduledAt` instead of terminal `FAILED`) |
 | `cancelNotification` | Implemented (Phase D) |
 | `getOrCreateConversation` | Implemented (Phase G, built ahead of Phase H — see note below) |
+| `findConversationByPhone` | Implemented (Phase J) — non-creating lookup, `null` if none exists; the notification processor's 24h-window check needs this instead of `getOrCreateConversation` (which would default a fresh row's `lastInboundMessageAt` to "now") |
 | `getConversation` | Implemented (Phase G) |
 | `applyConversationTurn` | Implemented (Phase G) — lock-guarded, optimistic version check, appends message rows |
 | `resetConversation` | Implemented (Phase G) |

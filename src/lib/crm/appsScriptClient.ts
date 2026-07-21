@@ -337,6 +337,15 @@ export class AppsScriptCrmClient implements CrmClient {
     );
   }
 
+  async findConversationByPhone(phoneE164: string): Promise<Conversation | null> {
+    const result = await this.call(
+      "findConversationByPhone", { phoneE164 },
+      z.object({ conversation: (schemas.conversationSchema as z.ZodType<Conversation>).nullable() }),
+      { retrySafe: true },
+    );
+    return result.conversation;
+  }
+
   getConversation(conversationId: string): Promise<Conversation> {
     return this.call(
       "getConversation", { conversationId }, schemas.conversationSchema as z.ZodType<Conversation>, { retrySafe: true },
@@ -413,9 +422,9 @@ export class AppsScriptCrmClient implements CrmClient {
     ).then((r) => r.notification);
   }
 
-  markNotificationFailed(notificationId: string, errorCode: string, errorMessage: string): Promise<Notification> {
+  markNotificationFailed(notificationId: string, errorCode: string, errorMessage: string, retryAfterMinutes?: number): Promise<Notification> {
     return this.call(
-      "markNotificationFailed", { notificationId, errorCode, errorMessage },
+      "markNotificationFailed", { notificationId, errorCode, errorMessage, retryAfterMinutes },
       z.object({ notification: schemas.notificationSchema }), { retrySafe: true },
     ).then((r) => r.notification);
   }

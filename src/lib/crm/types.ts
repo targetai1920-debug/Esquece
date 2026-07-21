@@ -473,6 +473,8 @@ export interface CrmClient {
   updateAppointmentStatus(appointmentId: string, status: AppointmentStatus, actor: { type: ActorType; id?: string }): Promise<Appointment>;
 
   getOrCreateConversation(phoneE164: string): Promise<Conversation>;
+  /** Non-creating lookup — null if no conversation exists yet. See lib/notifications/processor.ts for why this matters (getOrCreateConversation would default a fresh row's lastInboundMessageAt to "now"). */
+  findConversationByPhone(phoneE164: string): Promise<Conversation | null>;
   getConversation(conversationId: string): Promise<Conversation>;
   applyConversationTurn(input: ApplyConversationTurnInput): Promise<Conversation>;
   resetConversation(conversationId: string): Promise<Conversation>;
@@ -490,7 +492,7 @@ export interface CrmClient {
   listDueNotifications(): Promise<Notification[]>;
   claimNotification(notificationId: string): Promise<Notification>;
   markNotificationSent(notificationId: string): Promise<Notification>;
-  markNotificationFailed(notificationId: string, errorCode: string, errorMessage: string): Promise<Notification>;
+  markNotificationFailed(notificationId: string, errorCode: string, errorMessage: string, retryAfterMinutes?: number): Promise<Notification>;
   cancelNotification(notificationId: string): Promise<Notification>;
 
   createAuditEntry(input: { actorType: string; actorId?: string; action: string; entityType: string; entityId: string; before?: unknown; after?: unknown; metadata?: unknown }): Promise<void>;

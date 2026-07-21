@@ -25,6 +25,18 @@ function requireConversation_(conversationId) {
   return conversation;
 }
 
+/**
+ * Non-creating lookup — unlike actionGetOrCreateConversation_, never
+ * creates a row. Used by the Phase J notification processor to check the
+ * WhatsApp 24-hour customer-service window: a brand-new conversation would
+ * default lastInboundMessageAt to "now", which would incorrectly read as
+ * "within window" for a customer who never actually messaged us.
+ */
+function actionFindConversationByPhone_(payload) {
+  var phone = requirePhoneE164_(payload && payload.phoneE164, "phoneE164");
+  return { conversation: findConversationByPhone_(phone) || null };
+}
+
 function actionGetOrCreateConversation_(payload) {
   var phone = requirePhoneE164_(payload && payload.phoneE164, "phoneE164");
   var existing = findConversationByPhone_(phone);

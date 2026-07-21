@@ -179,6 +179,9 @@ function actionCreateAppointment_(payload) {
       scheduledAt: new Date().toISOString(),
     });
 
+    scheduleReminderNotification_(appointment, settings);
+    appointment = syncCreateCalendarEvent_(appointment);
+
     return { appointment: appointment, managementToken: rawManagementToken, idempotent: false };
   });
 }
@@ -236,6 +239,8 @@ function actionCancelAppointment_(payload) {
       appointmentId: updated.appointmentId, customerId: updated.customerId,
       type: "CANCELLATION", scheduledAt: new Date().toISOString(),
     });
+    cancelReminderNotificationsFor_(updated.appointmentId);
+    updated = syncCancelCalendarEvent_(updated);
 
     return { appointment: updated };
   });
@@ -297,8 +302,36 @@ function actionRescheduleAppointment_(payload) {
       appointmentId: updated.appointmentId, customerId: updated.customerId,
       type: "RESCHEDULE", scheduledAt: new Date().toISOString(),
     });
+    cancelReminderNotificationsFor_(appointmentId);
+    scheduleReminderNotification_(updated, settings);
+    updated = syncUpdateCalendarEvent_(updated);
 
     return { appointment: updated };
+  });
+}
+
+/** Schedules a REMINDER notification for REMINDER_HOURS_BEFORE hours ahead of the appointment — only if ENABLE_REMINDERS is on and there's still time for it to matter. */
+function scheduleReminderNotification_(appointment, settings) {
+  if (!settings.ENABLE_REMINDERS) return;
+  var hoursBefore = Number(settings.REMINDER_HOURS_BEFORE) || 24;
+  var scheduledAt = new Date(new Date(appointment.startUtc).getTime() - hoursBefore * 3600000);
+  if (scheduledAt.getTime() <= Date.now()) return; // booked too close to the appointment itself — no time left to remind
+  createNotificationRow_({
+    appointmentId: appointment.appointmentId,
+    customerId: appointment.customerId,
+    type: "REMINDER",
+    scheduledAt: scheduledAt.toISOString(),
+  });
+}
+
+/** Cancels any still-pending reminder for this appointment — called before cancellation and before rescheduling (which then reschedules a fresh one for the new time). */
+function cancelReminderNotificationsFor_(appointmentId) {
+  var sheet = getNotificationsSheet_();
+  var headers = SHEET_HEADERS[SHEET_NAMES.NOTIFICATIONS];
+  findRowsWhere_(sheet, function (row) {
+    return row.appointmentId === appointmentId && row.type === "REMINDER" && row.status === "PENDING";
+  }).forEach(function (row) {
+    updateRowById_(sheet, headers, "notificationId", row.notificationId, { status: "CANCELLED" });
   });
 }
 

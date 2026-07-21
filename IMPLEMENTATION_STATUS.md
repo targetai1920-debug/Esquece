@@ -44,7 +44,7 @@ ever exceeded.
 | G | Admin dashboard | DONE |
 | H | WhatsApp infrastructure (webhook, Meta client, dedup) | DONE |
 | I | Claude conversational agent | DONE |
-| J | Notifications and Calendar sync | NOT STARTED |
+| J | Notifications and Calendar sync | DONE |
 | K | Production hardening | NOT STARTED |
 
 ## Completed tasks
@@ -627,45 +627,121 @@ ever exceeded.
   (`/dev/whatsapp-simulator` + 4 new dev API routes present, correctly split static/dynamic).
   Secret grep clean. `git status` reviewed before commit.
 
+- (Phase J) `apps-script/Appointments.gs`: `scheduleReminderNotification_` (schedules a
+  `REMINDER` row at `REMINDER_HOURS_BEFORE` hours ahead of the appointment, only when
+  `ENABLE_REMINDERS` is on and there's still time left for it to matter) called from
+  `actionCreateAppointment_` and `actionRescheduleAppointment_` (re-scheduled to the new time);
+  `cancelReminderNotificationsFor_` (cancels any still-pending reminder) called from both
+  `actionCancelAppointment_` and before rescheduling. `actionMarkNotificationFailed_` extended
+  with an optional `retryAfterMinutes` — when provided, the notification goes back to `PENDING`
+  with a future `scheduledAt` instead of terminal `FAILED`, giving the cron processor an actual
+  retry mechanism without a new action name. `apps-script/Conversations.gs` gained
+  `actionFindConversationByPhone_` (non-creating lookup — see the bug this fixed, below).
+  `NOTIFICATION_TYPES` gained `CALENDAR_SYNC_FAILURE`. All new actions registered in `Router.gs`.
+- (Phase J) `apps-script/Calendar.gs` (new) — optional Google Calendar mirror via Apps Script's
+  built-in `CalendarApp` (no service account — the deploying Google account authorizes Calendar
+  access as a normal part of deployment, same as the rest of this project's credential model).
+  Disabled by default (`ENABLE_CALENDAR_SYNC=false`); every function is a no-op when disabled or
+  no `GOOGLE_CALENDAR_ID` is configured. `syncCreateCalendarEvent_`/`syncUpdateCalendarEvent_`/
+  `syncCancelCalendarEvent_` wired into `actionCreateAppointment_`/`actionRescheduleAppointment_`/
+  `actionCancelAppointment_` respectively. A Calendar failure is **never destructive**: caught,
+  the appointment row gets `calendarSyncStatus: "FAILED"`, and a `CALENDAR_SYNC_FAILURE`
+  notification (channel `"admin"`) is queued so staff see it in the dashboard — not a background
+  retry loop (this sync is best-effort and off by default; a queued, staff-visible record is
+  proportionate to that). Never includes conversation content in the event, only booking facts
+  (service/barber/reference/status).
+- (Phase J) **Found and fixed a real bug while writing the Calendar sync test**: the three sync
+  functions called `updateRowById_` to patch `calendarEventId`/`calendarSyncStatus` onto the
+  appointment row, but `updateRowById_` (like every Repositories.gs helper) returns a *new*
+  object rather than mutating its input — the caller's `appointment`/`updated` local variable
+  was never reassigned, so the value actually returned by `createAppointment`/
+  `rescheduleAppointment`/`cancelAppointment` still showed the pre-sync (empty)
+  `calendarEventId`/`calendarSyncStatus` even though the sheet itself was correctly updated. A
+  genuinely failing test (`expected a synced calendar event once ENABLE_CALENDAR_SYNC is on`)
+  caught this immediately; fixed by having every `sync*CalendarEvent_` function return the
+  updated row and every call site reassign its local variable to that return value.
+- (Phase J) **Found and fixed a real design bug while building the notification processor**: the
+  24-hour customer-service-window check was originally going to use `getOrCreateConversation`,
+  which defaults a brand-new conversation's `lastInboundMessageAt` to "now" — meaning a customer
+  who booked via the website or admin and never once messaged WhatsApp would be incorrectly read
+  as "within the window" the very first time a notification was processed for them, and get a
+  free-form message instead of the required approved template. Fixed by adding a genuinely
+  non-creating `findConversationByPhone` (new CrmClient method, backed by the new
+  `actionFindConversationByPhone_` Apps Script action) and treating "no conversation exists" as
+  definitively outside the window.
+- (Phase J) `src/lib/notifications/processor.ts` — `processDueNotifications()`: claims each due
+  notification atomically (`IDEMPOTENCY_CONFLICT` from a concurrent claim is treated as
+  `skipped_duplicate`, not an error), routes non-`whatsapp`-channel notifications (e.g.
+  `INTERNAL_ALERT`) straight to `SENT` with no send attempt, re-checks the appointment still
+  exists and isn't stale for `REMINDER` (cancels it if the appointment is no longer
+  `PENDING`/`CONFIRMED`), checks the 24h window via the fixed `findConversationByPhone`, sends
+  free-form text within the window or an approved template (`getWhatsAppTemplates()`) outside it
+  — failing safely with a clear `TEMPLATE_REQUIRED` reason if no template is configured, never
+  silently dropped and never sent in violation of the window — and applies exponential-backoff
+  retries (5/15/30/60/120 minutes) up to 5 attempts before giving up permanently.
+- (Phase J) `src/app/api/cron/notifications/route.ts` — protected by `CRON_SECRET`
+  (constant-time-compared `Authorization: Bearer` header), `GET`/`POST` both supported
+  (schedulers vary in which they use; every action here is already idempotent per-notification).
+- (Phase J) `tests/notifications-processor.test.ts` — 7 tests against the real processor: sends
+  free-form text within the window; fails safely with `template_required` outside the window
+  with none configured; sends via an approved template outside the window when one is
+  configured; skips (cancels) a `REMINDER` for an appointment that's no longer changeable;
+  routes a non-WhatsApp channel straight to sent; retries with backoff on a simulated WhatsApp
+  send failure (and confirms the retried notification isn't immediately due again); never
+  processes an already-`SENT` notification on a second run. `apps-script/Tests.gs` gained two
+  new tests: reminder scheduling + cancellation-cancels-the-reminder, and the full Calendar sync
+  lifecycle (disabled-by-default no-op, create/reschedule/cancel event mirroring, and the
+  non-destructive-failure path with a queued `CALENDAR_SYNC_FAILURE` notification) — the harness
+  (`apps-script/tests/run-tests.mjs`) gained a minimal in-memory `CalendarApp` mock for this.
+- (Phase J) **Verified for real, not just unit-tested**: ran the actual dev server and drove the
+  cron endpoint with `curl` — no `Authorization` header → 401; wrong secret → 401; correct secret
+  with nothing due → `{processed: 0}`; created a real appointment via the live `/api/public/
+  appointments` route (website-sourced, no prior WhatsApp conversation) and re-ran the cron,
+  which correctly reported `{"outcome":"failed","detail":"template_required"}` — exactly the
+  honest, safe failure this design intends for that scenario, observed against the real running
+  server, not assumed from the test suite alone.
+- (Phase J) Full quality gate: `npm run lint` clean, `npm run typecheck` clean, `npm test` → 9
+  files, **81/81 passed** (previous 74 + 7 notifications-processor), `npm run test:apps-script` →
+  **22/22 passed** (20 previous + reminder-scheduling + Calendar-sync-lifecycle), `npm run build`
+  succeeded (`/api/cron/notifications` present as a dynamic route). Secret grep clean. `git
+  status` reviewed before commit.
+
 ## In-progress tasks
 
-None — Phases A through I are complete as of this update.
+None — Phases A through J are complete as of this update.
 
 ## Remaining tasks
 
-Everything in Phases J–K — see the phase list in `PROJECT_PLAN.md`: notifications/reminders
-(`/api/cron/notifications` protected by `CRON_SECRET`, WhatsApp template handling for the 24-hour
-window, optional Google Calendar sync — Google Sheets stays authoritative either way), and
-production hardening (Render deployment docs, remaining setup guides — `META_SETUP.md`,
+Phase K (production hardening) — see `PROJECT_PLAN.md`: remaining setup guides (`META_SETUP.md`,
 `ANTHROPIC_SETUP.md`, `RENDER_SETUP.md`, `DEPLOYMENT.md`, `TESTING.md`, `OPERATIONS.md`,
-`LIMITATIONS.md` — the final cross-channel test suite, and the final report).
+`LIMITATIONS.md`), a dependency/secret review pass, the final cross-channel automated test suite
+proving the separate website/WhatsApp/admin genuinely share one CRM (concurrent booking, admin
+block, cancellation/reschedule sync, service-duration-change sync), and the final report.
 
 ## Blockers
 
-None credential-related yet — Phase J/K remain credential-independent until the final external
-configuration gate, except that Phase H/I's *live* behavior (real Meta webhook traffic, real
-Claude calls) can only be verified against mocks/synthetic signed requests until Meta/Anthropic
-credentials exist (exactly what this and the prior phase's verification honestly represent). The
-one real external step still pending since Phase B is an actual Apps Script deployment to confirm
-this session's mock/vm-harness-based verification holds up in the real Google environment — not a
-blocker to continuing, just an honestly-labeled gap (see `apps-script/README.md`).
+None credential-related yet — Phase K remains credential-independent until the final external
+configuration gate. This phase's Calendar-sync and cron-processor verification is honestly bounded
+by mocks/no real Google Calendar or Meta account; the one real external step still pending since
+Phase B is an actual Apps Script deployment to confirm this session's mock/vm-harness-based
+verification (now including the `CalendarApp` mock) holds up in the real Google environment — not
+a blocker to continuing, just an honestly-labeled gap (see `apps-script/README.md`).
 
 ## Latest commit
 
-Phase I committed and pushed — see the session's final report for the exact hash (this file is
-updated in the same commit as Phase I's code, so `git log -1` in the repo is the authoritative
+Phase J committed and pushed — see the session's final report for the exact hash (this file is
+updated in the same commit as Phase J's code, so `git log -1` in the repo is the authoritative
 source if this line is ever stale).
 
 ## Tests last executed
 
-Post-Phase-I (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 8
-files, **74/74 passed** (5 phone + 6 signing + 20 MockCrmClient + 9 public API + 5 admin API + 11
-WhatsApp provider + 10 WhatsApp webhook + 8 conversation orchestrator), `npm run test:apps-script`
-→ **20/20 passed**, `npm run build` succeeded. Additionally verified live: ran `npm run dev` and
-drove a complete booking conversation through the real `/dev/whatsapp-simulator` API routes with
-`curl` against the real running server (see the detailed bullet above) — real end-to-end proof
-for this repo's own conversational-agent surface, using `AI_PROVIDER=mock`/`CRM_PROVIDER=mock`/
-`WHATSAPP_PROVIDER=mock` (no real Anthropic/Meta credentials involved yet).
+Post-Phase-J (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 9
+files, **81/81 passed** (5 phone + 6 signing + 20 MockCrmClient + 9 public API + 5 admin API + 11
+WhatsApp provider + 10 WhatsApp webhook + 8 conversation orchestrator + 7 notifications
+processor), `npm run test:apps-script` → **22/22 passed**, `npm run build` succeeded.
+Additionally verified live: ran `npm run dev` and drove the cron notification endpoint's auth
+gate and a real booking → notification → safe-template-required-failure flow via `curl` against
+the real running server (see the detailed bullet above).
 
 ## External configuration still required
 

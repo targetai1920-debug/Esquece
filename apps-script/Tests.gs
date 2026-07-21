@@ -369,6 +369,136 @@ var INTERNAL_TESTS_ = [
       }
     },
   },
+  {
+    name: "booking with reminders enabled schedules a REMINDER notification, which cancellation then cancels",
+    run: function () {
+      var settingsSheet = getOrCreateSheet_(getSpreadsheet_(), SHEET_NAMES.SETTINGS);
+      var settingsHeaders = SHEET_HEADERS[SHEET_NAMES.SETTINGS];
+      var originalEnableReminders = findRowById_(settingsSheet, "key", "ENABLE_REMINDERS").value;
+      updateRowById_(settingsSheet, settingsHeaders, "key", "ENABLE_REMINDERS", { value: "true" });
+
+      seedDemoData();
+      var testPhone = "59100000007";
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var created;
+      try {
+        created = actionCreateAppointment_({
+          idempotencyKey: "test-reminder-" + testPhone,
+          source: "WHATSAPP",
+          serviceId: "demo-service-1",
+          anyBarber: true,
+          localDate: testDate,
+          localStartTime: "09:00",
+          customer: { name: "Prueba Recordatorio", phoneE164: testPhone },
+        }).appointment;
+
+        var reminders = findRowsWhere_(getNotificationsSheet_(), function (row) {
+          return row.appointmentId === created.appointmentId && row.type === "REMINDER";
+        });
+        if (reminders.length !== 1 || reminders[0].status !== "PENDING") {
+          throw new Error("expected exactly one PENDING REMINDER notification after booking with reminders enabled");
+        }
+
+        actionCancelAppointment_({ appointmentId: created.appointmentId, actor: { type: "system" } });
+
+        var afterCancel = findRowsWhere_(getNotificationsSheet_(), function (row) {
+          return row.appointmentId === created.appointmentId && row.type === "REMINDER";
+        });
+        if (afterCancel[0].status !== "CANCELLED") {
+          throw new Error("expected the REMINDER notification to be cancelled once its appointment was cancelled");
+        }
+      } finally {
+        updateRowById_(settingsSheet, settingsHeaders, "key", "ENABLE_REMINDERS", { value: originalEnableReminders });
+        if (created) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === created.appointmentId; });
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.appointmentId === created.appointmentId; });
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+        }
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "Calendar sync: create/reschedule/cancel mirror the appointment lifecycle when enabled, and stay disabled by default",
+    run: function () {
+      seedDemoData();
+      var testPhone = "59100000009";
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var newDate = nextWeekdayLocalDate_(testDate, 1);
+      var created;
+      try {
+        // Disabled by default — booking must succeed with no calendar side effect at all.
+        created = actionCreateAppointment_({
+          idempotencyKey: "test-calendar-disabled-" + testPhone,
+          source: "WHATSAPP", serviceId: "demo-service-1", anyBarber: true,
+          localDate: testDate, localStartTime: "09:00",
+          customer: { name: "Prueba Calendario", phoneE164: testPhone },
+        }).appointment;
+        if (created.calendarEventId) {
+          throw new Error("expected no calendar event when ENABLE_CALENDAR_SYNC is off");
+        }
+        actionCancelAppointment_({ appointmentId: created.appointmentId, actor: { type: "system" } });
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === created.appointmentId; });
+        created = null;
+
+        PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "true");
+        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "test-calendar-for-esquece");
+
+        created = actionCreateAppointment_({
+          idempotencyKey: "test-calendar-enabled-" + testPhone,
+          source: "WHATSAPP", serviceId: "demo-service-1", anyBarber: true,
+          localDate: testDate, localStartTime: "10:00",
+          customer: { name: "Prueba Calendario", phoneE164: testPhone },
+        }).appointment;
+        if (!created.calendarEventId || created.calendarSyncStatus !== "SYNCED") {
+          throw new Error("expected a synced calendar event once ENABLE_CALENDAR_SYNC is on");
+        }
+
+        var rescheduled = actionRescheduleAppointment_({
+          appointmentId: created.appointmentId, actor: { type: "system" },
+          newLocalDate: newDate, newLocalStartTime: "11:00",
+        }).appointment;
+        if (rescheduled.calendarEventId !== created.calendarEventId || rescheduled.calendarSyncStatus !== "SYNCED") {
+          throw new Error("expected the same calendar event to be updated (not recreated) on reschedule");
+        }
+
+        actionCancelAppointment_({ appointmentId: created.appointmentId, actor: { type: "system" } });
+        var afterCancel = getAppointmentById_(created.appointmentId);
+        if (afterCancel.calendarSyncStatus !== "CANCELLED") {
+          throw new Error("expected calendarSyncStatus CANCELLED after cancelling a synced appointment");
+        }
+
+        // A misconfigured/inaccessible calendar must fail non-destructively — the appointment itself still exists and is bookable.
+        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "invalid-calendar-id-for-test");
+        var failing = actionCreateAppointment_({
+          idempotencyKey: "test-calendar-failure-" + testPhone,
+          source: "WHATSAPP", serviceId: "demo-service-1", anyBarber: true,
+          localDate: testDate, localStartTime: "13:00",
+          customer: { name: "Prueba Calendario", phoneE164: testPhone },
+        }).appointment;
+        if (failing.status !== "CONFIRMED") {
+          throw new Error("a calendar sync failure must never prevent the booking itself from succeeding");
+        }
+        var failureNotifications = findRowsWhere_(getNotificationsSheet_(), function (row) {
+          return row.appointmentId === failing.appointmentId && row.type === "CALENDAR_SYNC_FAILURE";
+        });
+        if (failureNotifications.length !== 1) {
+          throw new Error("expected a CALENDAR_SYNC_FAILURE notification to be queued when Calendar sync fails");
+        }
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === failing.appointmentId; });
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.appointmentId === failing.appointmentId; });
+      } finally {
+        PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "false");
+        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "");
+        if (created) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === created.appointmentId; });
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.appointmentId === created.appointmentId; });
+        }
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+        removeDemoData();
+      }
+    },
+  },
 ];
 
 /**

@@ -562,11 +562,28 @@ export class MockCrmClient implements CrmClient {
     });
 
     this.notifications.push(this.buildNotification({ appointmentId: appointment.appointmentId, customerId: customer.customerId, type: "CONFIRMATION" }));
+    this.scheduleReminderNotification(appointment);
 
     return { appointment: clone(appointment), managementToken: rawManagementToken, idempotent: false };
   }
 
-  private buildNotification(params: { appointmentId?: string; customerId?: string; conversationId?: string; type: Notification["type"] }): Notification {
+  /** Mirrors apps-script/Appointments.gs's scheduleReminderNotification_ — only if ENABLE_REMINDERS is on and there's still time for it to matter. */
+  private scheduleReminderNotification(appointment: Appointment) {
+    if (!this.settings.ENABLE_REMINDERS) return;
+    const hoursBefore = Number(this.settings.REMINDER_HOURS_BEFORE) || 24;
+    const scheduledAt = new Date(new Date(appointment.startUtc).getTime() - hoursBefore * 3_600_000);
+    if (scheduledAt.getTime() <= Date.now()) return;
+    this.notifications.push(this.buildNotification({ appointmentId: appointment.appointmentId, customerId: appointment.customerId, type: "REMINDER", scheduledAt: scheduledAt.toISOString() }));
+  }
+
+  /** Mirrors apps-script/Appointments.gs's cancelReminderNotificationsFor_. */
+  private cancelReminderNotificationsFor(appointmentId: string) {
+    this.notifications
+      .filter((n) => n.appointmentId === appointmentId && n.type === "REMINDER" && n.status === "PENDING")
+      .forEach((n) => { n.status = "CANCELLED"; });
+  }
+
+  private buildNotification(params: { appointmentId?: string; customerId?: string; conversationId?: string; type: Notification["type"]; channel?: string; scheduledAt?: string }): Notification {
     const now = new Date().toISOString();
     return {
       notificationId: `ntf_${randomUUID().replace(/-/g, "").slice(0, 20)}`,
@@ -574,8 +591,8 @@ export class MockCrmClient implements CrmClient {
       customerId: params.customerId || null,
       conversationId: params.conversationId || null,
       type: params.type,
-      channel: "whatsapp",
-      scheduledAt: now,
+      channel: params.channel || "whatsapp",
+      scheduledAt: params.scheduledAt || now,
       status: "PENDING",
       attemptCount: 0,
       lastAttemptAt: "",
@@ -640,6 +657,7 @@ export class MockCrmClient implements CrmClient {
     appointment.updatedAt = appointment.cancelledAt;
 
     this.notifications.push(this.buildNotification({ appointmentId: appointment.appointmentId, customerId: appointment.customerId, type: "CANCELLATION" }));
+    this.cancelReminderNotificationsFor(appointment.appointmentId);
     return clone(appointment);
   }
 
@@ -671,6 +689,8 @@ export class MockCrmClient implements CrmClient {
     appointment.updatedAt = new Date().toISOString();
 
     this.notifications.push(this.buildNotification({ appointmentId: appointment.appointmentId, customerId: appointment.customerId, type: "RESCHEDULE" }));
+    this.cancelReminderNotificationsFor(appointment.appointmentId);
+    this.scheduleReminderNotification(appointment);
     return clone(appointment);
   }
 
@@ -704,6 +724,11 @@ export class MockCrmClient implements CrmClient {
       this.conversations.push(conversation);
     }
     return clone(conversation);
+  }
+
+  async findConversationByPhone(phoneE164: string): Promise<Conversation | null> {
+    const conversation = this.conversations.find((c) => c.phoneE164 === phoneE164);
+    return conversation ? clone(conversation) : null;
   }
 
   async getConversation(conversationId: string): Promise<Conversation> {
@@ -812,7 +837,7 @@ export class MockCrmClient implements CrmClient {
   }
 
   async createNotification(input: CreateNotificationInput): Promise<Notification> {
-    const notification = this.buildNotification({ appointmentId: input.appointmentId, customerId: input.customerId, conversationId: input.conversationId, type: input.type });
+    const notification = this.buildNotification({ appointmentId: input.appointmentId, customerId: input.customerId, conversationId: input.conversationId, type: input.type, channel: input.channel, scheduledAt: input.scheduledAt });
     this.notifications.push(notification);
     return clone(notification);
   }
@@ -836,12 +861,17 @@ export class MockCrmClient implements CrmClient {
     notification.sentAt = new Date().toISOString();
     return clone(notification);
   }
-  async markNotificationFailed(notificationId: string, errorCode: string, errorMessage: string): Promise<Notification> {
+  async markNotificationFailed(notificationId: string, errorCode: string, errorMessage: string, retryAfterMinutes?: number): Promise<Notification> {
     const notification = this.notifications.find((n) => n.notificationId === notificationId);
     if (!notification) throw new CrmError("NOT_FOUND", "Notificación no encontrada.", false);
-    notification.status = "FAILED";
     notification.errorCode = errorCode;
     notification.errorMessage = errorMessage;
+    if (retryAfterMinutes && retryAfterMinutes > 0) {
+      notification.status = "PENDING";
+      notification.scheduledAt = new Date(Date.now() + retryAfterMinutes * 60_000).toISOString();
+    } else {
+      notification.status = "FAILED";
+    }
     return clone(notification);
   }
   async cancelNotification(notificationId: string): Promise<Notification> {

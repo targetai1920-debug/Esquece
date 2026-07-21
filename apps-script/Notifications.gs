@@ -12,7 +12,7 @@ function getNotificationsSheet_() {
   return getOrCreateSheet_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS);
 }
 
-var NOTIFICATION_TYPES = ["CONFIRMATION", "REMINDER", "CANCELLATION", "RESCHEDULE", "INTERNAL_ALERT"];
+var NOTIFICATION_TYPES = ["CONFIRMATION", "REMINDER", "CANCELLATION", "RESCHEDULE", "INTERNAL_ALERT", "CALENDAR_SYNC_FAILURE"];
 
 /**
  * Internal helper — Appointments.gs calls this directly (already holding
@@ -95,17 +95,28 @@ function actionMarkNotificationSent_(payload) {
   return { notification: updated };
 }
 
+/**
+ * `retryAfterMinutes` (optional) — Phase J's cron retry policy: when set,
+ * the notification goes back to PENDING with a future scheduledAt instead
+ * of terminally FAILED, so listDueNotifications() picks it up again later.
+ * Omitted (or the caller has exhausted its own retry budget) means FAILED
+ * is terminal — never sent, never retried again automatically.
+ */
 function actionMarkNotificationFailed_(payload) {
   var notificationId = requireString_(payload && payload.notificationId, "notificationId");
   var errorCode = optionalString_(payload && payload.errorCode, "");
   var errorMessage = optionalString_(payload && payload.errorMessage, "");
+  var retryAfterMinutes = payload && payload.retryAfterMinutes;
   var sheet = getNotificationsSheet_();
   var headers = SHEET_HEADERS[SHEET_NAMES.NOTIFICATIONS];
-  var updated = updateRowById_(sheet, headers, "notificationId", notificationId, {
-    status: "FAILED",
-    errorCode: errorCode,
-    errorMessage: errorMessage,
-  }, new ApiError(ERROR_CODES.NOT_FOUND, "Notificación no encontrada.", false));
+  var patch = { errorCode: errorCode, errorMessage: errorMessage };
+  if (typeof retryAfterMinutes === "number" && retryAfterMinutes > 0) {
+    patch.status = "PENDING";
+    patch.scheduledAt = new Date(Date.now() + retryAfterMinutes * 60000).toISOString();
+  } else {
+    patch.status = "FAILED";
+  }
+  var updated = updateRowById_(sheet, headers, "notificationId", notificationId, patch, new ApiError(ERROR_CODES.NOT_FOUND, "Notificación no encontrada.", false));
   return { notification: updated };
 }
 
