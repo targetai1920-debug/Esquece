@@ -106,6 +106,125 @@ SHEET_HEADERS[SHEET_NAMES.PROMOTIONS] = ["promotionId", "name", "description", "
 /** All CRM data sheets except the generated DASHBOARD view. */
 var CRM_DATA_SHEET_NAMES = Object.keys(SHEET_HEADERS);
 
+/**
+ * Type-normalization frontier between whatever Google Sheets' getValues()/
+ * setValues() hands back and what every domain file assumes it receives.
+ * Real Google Sheets auto-detects a cell's type from what's written to it
+ * (or typed into it) — a literal "08:00" string can come back as a Date
+ * (time-of-day serial) on the next read, and a phone number with no "+"
+ * prefix (this CRM always strips it — Validation.gs's requirePhoneE164_)
+ * can come back as a Number. The Node vm test harness's mock sheet never
+ * does this coercion, which is exactly why this needs its own explicit,
+ * column-name-driven boundary rather than relying on "the mock already
+ * agrees with production." Column names are unique and consistent across
+ * every sheet (CRM_SCHEMA.md), so classification is done once, by name —
+ * not per sheet, except where a name only makes sense on one sheet
+ * (SETTINGS.value, handled via EXTRA_TEXT_FORMAT_COLUMNS_BY_SHEET_ below).
+ *
+ * Deliberately NOT included: price, durationMinutes, bufferMinutes,
+ * displayOrder, the *Appointments counters, servicePriceSnapshot,
+ * serviceDurationSnapshot, serviceBufferSnapshot, version, attemptCount,
+ * dayOfWeek — these must stay numeric, never forced to text.
+ */
+var LOCAL_TIME_COLUMN_NAMES_ = {
+  openingTime: true, closingTime: true, startTime: true, endTime: true,
+  localStartTime: true, localEndTime: true,
+};
+var LOCAL_DATE_COLUMN_NAMES_ = {
+  localDate: true, date: true, startDate: true, endDate: true,
+  validFrom: true, validUntil: true,
+};
+/** Identifiers/phones/hashes/keys that must never silently become a Number. */
+var FORCE_STRING_COLUMN_NAMES_ = {
+  phoneE164: true, customerPhoneSnapshot: true, reference: true,
+  idempotencyKey: true, managementTokenHash: true, payloadHash: true,
+};
+/** Extra columns to force to text that only make sense on one specific sheet. */
+var EXTRA_TEXT_FORMAT_COLUMNS_BY_SHEET_ = {};
+EXTRA_TEXT_FORMAT_COLUMNS_BY_SHEET_[SHEET_NAMES.SETTINGS] = ["value"];
+
+/** Every column ending in "Id" (customerId, serviceId, appointmentId, ...) is an identifier. */
+function isForceStringColumn_(columnName) {
+  return FORCE_STRING_COLUMN_NAMES_[columnName] === true || /Id$/.test(columnName);
+}
+
+/** Minutes-of-day fraction (0..1 — how Sheets stores a "time of day" cell internally) -> "HH:mm". */
+function dayFractionToLocalTime_(fraction) {
+  var totalMinutes = Math.round(fraction * 24 * 60) % (24 * 60);
+  if (totalMinutes < 0) totalMinutes += 24 * 60;
+  var hh = Math.floor(totalMinutes / 60);
+  var mm = totalMinutes % 60;
+  return (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
+}
+
+/**
+ * Normalizes whatever Sheets handed back for a local-time column into a
+ * canonical "HH:mm" string: a Date (Sheets auto-parsed a literal "08:00"
+ * into a time-of-day serial), a bare day-fraction Number, or an
+ * already-correct string all resolve the same way. Empty/missing stays ""
+ * so a required-field validator still reports it as missing, not a bad time.
+ */
+function normalizeLocalTimeCellValue_(raw) {
+  if (raw === null || raw === undefined || raw === "") return "";
+  if (raw instanceof Date) return formatUtcToLocalTime_(raw, getBusinessTimezone_());
+  if (typeof raw === "number") return dayFractionToLocalTime_(raw);
+  var str = String(raw).trim();
+  return isValidLocalTime_(str) ? str : str.substring(0, 5);
+}
+
+/** Same idea for local-date columns — Sheets may hand back a Date instead of "yyyy-MM-dd". */
+function normalizeLocalDateCellValue_(raw) {
+  if (raw === null || raw === undefined || raw === "") return "";
+  if (raw instanceof Date) return formatUtcToLocalDate_(raw, getBusinessTimezone_());
+  var str = String(raw).trim();
+  return LOCAL_DATE_PATTERN.test(str) ? str : str.substring(0, 10);
+}
+
+/**
+ * Identifiers/phones/hashes/keys must never silently become a Number
+ * (Sheets auto-converts a purely-numeric string, like a phone with no "+"
+ * prefix, to a Number) — always read/write/compare them as text.
+ */
+function normalizeIdentifierCellValue_(raw) {
+  if (raw === null || raw === undefined || raw === "") return "";
+  return String(raw).trim();
+}
+
+function normalizeSheetCellValue_(columnName, raw) {
+  if (LOCAL_TIME_COLUMN_NAMES_[columnName]) return normalizeLocalTimeCellValue_(raw);
+  if (LOCAL_DATE_COLUMN_NAMES_[columnName]) return normalizeLocalDateCellValue_(raw);
+  if (isForceStringColumn_(columnName)) return normalizeIdentifierCellValue_(raw);
+  return raw;
+}
+
+function shouldForceTextColumnFormat_(sheetName, columnName) {
+  if (LOCAL_TIME_COLUMN_NAMES_[columnName] || LOCAL_DATE_COLUMN_NAMES_[columnName] || isForceStringColumn_(columnName)) {
+    return true;
+  }
+  var extra = EXTRA_TEXT_FORMAT_COLUMNS_BY_SHEET_[sheetName];
+  return !!extra && extra.indexOf(columnName) !== -1;
+}
+
+/**
+ * Sets the data rows (never the header row) of every date/time/identifier
+ * column to Plain Text ("@") number format, so a future write of a literal
+ * "08:00"/"+591..."-shaped string into that column is no longer
+ * auto-detected by Sheets as a Date/Number on the *next* read. This does
+ * NOT retroactively change already-stored values (Range#setNumberFormat
+ * only changes how a cell is interpreted going forward, not what's already
+ * in it) — that's what normalizeSheetCellValue_ is for. Purely a format
+ * change, never touches a value, safe to re-run on every setupCRM() call
+ * against a sheet that already has real data.
+ */
+function applyTextColumnFormats_(sheet, sheetName, headers) {
+  var maxRows = Math.max(sheet.getMaxRows(), 2);
+  headers.forEach(function (columnName, index) {
+    if (shouldForceTextColumnFormat_(sheetName, columnName)) {
+      sheet.getRange(2, index + 1, maxRows - 1, 1).setNumberFormat("@");
+    }
+  });
+}
+
 function getOrCreateSheet_(spreadsheet, sheetName) {
   var sheet = spreadsheet.getSheetByName(sheetName);
   var headers = SHEET_HEADERS[sheetName];
@@ -163,7 +282,7 @@ function sheetToObjects_(sheet) {
     var row = values[r];
     var obj = {};
     for (var c = 0; c < headers.length; c++) {
-      obj[headers[c]] = row[c];
+      obj[headers[c]] = normalizeSheetCellValue_(headers[c], row[c]);
     }
     obj.__row = r + 1; // 1-based sheet row, for in-place updates
     rows.push(obj);
@@ -174,7 +293,8 @@ function sheetToObjects_(sheet) {
 function appendRowFromObject_(sheet, headers, obj) {
   var row = headers.map(function (h) {
     var v = obj[h];
-    return v === undefined || v === null ? "" : v;
+    if (v === undefined || v === null) return "";
+    return normalizeSheetCellValue_(h, v);
   });
   sheet.appendRow(row);
 }
@@ -182,7 +302,8 @@ function appendRowFromObject_(sheet, headers, obj) {
 function updateRowFromObject_(sheet, headers, obj, rowNumber) {
   var row = headers.map(function (h) {
     var v = obj[h];
-    return v === undefined || v === null ? "" : v;
+    if (v === undefined || v === null) return "";
+    return normalizeSheetCellValue_(h, v);
   });
   sheet.getRange(rowNumber, 1, 1, headers.length).setValues([row]);
 }

@@ -9,6 +9,11 @@ function coerceSettingValue_(rawValue, type) {
     var n = Number(rawValue);
     return isNaN(n) ? null : n;
   }
+  // OPENING_TIME/CLOSING_TIME are type "time" — Sheets may hand back a Date
+  // (a literal "08:00" auto-parsed as a time-of-day serial) or a bare
+  // day-fraction Number instead of the string; normalize the same way
+  // every other local-time column does (Sheets.gs).
+  if (type === "time") return normalizeLocalTimeCellValue_(rawValue);
   return rawValue === undefined || rawValue === null ? "" : String(rawValue);
 }
 

@@ -5,10 +5,26 @@
  * these instead of hand-rolling row-finding logic each time.
  */
 
+/**
+ * Canonical string form for an identifier-column comparison — "" for
+ * null/undefined/empty (so a missing id never matches a blank cell), the
+ * trimmed string otherwise. Defense-in-depth on top of Sheets.gs's own
+ * read-side normalization: even if a caller passes a raw Number (or a
+ * column somehow escapes normalizeSheetCellValue_'s classification), this
+ * still compares canonically instead of failing strict `===` on
+ * String-vs-Number (e.g. a phone number Sheets auto-converted to a Number).
+ */
+function canonicalIdString_(value) {
+  if (value === null || value === undefined || value === "") return null;
+  return String(value).trim();
+}
+
 function findRowById_(sheet, idColumn, id) {
+  var target = canonicalIdString_(id);
+  if (target === null) return null;
   var rows = sheetToObjects_(sheet);
   for (var i = 0; i < rows.length; i++) {
-    if (rows[i][idColumn] === id) return rows[i];
+    if (canonicalIdString_(rows[i][idColumn]) === target) return rows[i];
   }
   return null;
 }

@@ -499,6 +499,126 @@ var INTERNAL_TESTS_ = [
       }
     },
   },
+  // --- Sheets type-coercion boundary (Sheets.gs) --------------------------
+  // Real Google Sheets auto-detects a cell's type from what's written to
+  // it: a phone number with no "+" (this CRM always strips it) can come
+  // back as a Number, and a literal "08:00"/"16:00" can come back as a
+  // Date or a bare day-fraction Number instead of a string. The tests
+  // above never exercised this because nothing writes a raw Date/Number
+  // into these columns on its own — these tests do that explicitly, to
+  // reproduce the exact conversions a real, already-existing spreadsheet
+  // can hand back, not just what this project's own write path produces.
+  {
+    name: "sheetToObjects_ normalizes a phone number Sheets already converted to a Number",
+    run: function () {
+      var testPhone = "59100000011";
+      try {
+        var created = actionUpsertCustomer_({ phoneE164: testPhone, name: "Prueba Tipo Numero" }).customer;
+        var sheet = getCustomersSheet_();
+        var headers = SHEET_HEADERS[SHEET_NAMES.CUSTOMERS];
+        var phoneCol = headers.indexOf("phoneE164") + 1;
+        var rowRef = findRowById_(sheet, "customerId", created.customerId);
+        // Simulate what real Google Sheets does to a purely-numeric string
+        // written with no "+" prefix: store it as a Number, not text.
+        sheet.getRange(rowRef.__row, phoneCol, 1, 1).setValues([[Number(testPhone)]]);
+
+        var reread = findCustomerByPhoneRaw_(testPhone);
+        if (!reread || reread.customerId !== created.customerId) {
+          throw new Error("expected findCustomerByPhoneRaw_ to still find the customer after phoneE164 became a Number in the sheet");
+        }
+        if (typeof reread.phoneE164 !== "string" || reread.phoneE164 !== testPhone) {
+          throw new Error("expected phoneE164 normalized back to the string \"" + testPhone + "\", got " + JSON.stringify(reread.phoneE164));
+        }
+      } finally {
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+      }
+    },
+  },
+  {
+    name: "upsertCustomer still dedupes when the stored phone was previously coerced to a Number",
+    run: function () {
+      var testPhone = "59100000012";
+      try {
+        var created = actionUpsertCustomer_({ phoneE164: testPhone, name: "Prueba Numero Dedupe" }).customer;
+        var sheet = getCustomersSheet_();
+        var headers = SHEET_HEADERS[SHEET_NAMES.CUSTOMERS];
+        var phoneCol = headers.indexOf("phoneE164") + 1;
+        var rowRef = findRowById_(sheet, "customerId", created.customerId);
+        sheet.getRange(rowRef.__row, phoneCol, 1, 1).setValues([[Number(testPhone)]]);
+
+        var updated = actionUpsertCustomer_({ phoneE164: testPhone, email: "numero@example.com" }).customer;
+        if (updated.customerId !== created.customerId) {
+          throw new Error("second upsert created a new customer instead of updating the one whose phone was stored as a Number");
+        }
+        if (updated.name !== "Prueba Numero Dedupe") {
+          throw new Error("second upsert erased the name field instead of preserving it");
+        }
+      } finally {
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+      }
+    },
+  },
+  {
+    name: "normalizeLocalTimeCellValue_ resolves a Date-typed cell (Sheets auto-parsing \"08:00\") back to \"08:00\"",
+    run: function () {
+      var timezone = getBusinessTimezone_();
+      var asDate = parseLocalDateTimeToUtc_("2030-06-15", "08:00", timezone);
+      assertEqual_(normalizeLocalTimeCellValue_(asDate), "08:00", "Date-typed time cell");
+    },
+  },
+  {
+    name: "normalizeLocalTimeCellValue_ resolves a bare day-fraction Number back to \"HH:mm\"",
+    run: function () {
+      assertEqual_(normalizeLocalTimeCellValue_(8 / 24), "08:00", "day-fraction 8/24");
+      assertEqual_(normalizeLocalTimeCellValue_(0), "00:00", "day-fraction 0");
+      assertEqual_(normalizeLocalTimeCellValue_(23.5 / 24), "23:30", "day-fraction 23.5/24");
+    },
+  },
+  {
+    name: "creating an appointment succeeds even when WORKING_HOURS openingTime/closingTime were already stored as Date/Number, not strings",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var testPhone = "59100000013";
+      var created;
+      var workingHoursSheet = getWorkingHoursSheet_();
+      var whHeaders = SHEET_HEADERS[SHEET_NAMES.WORKING_HOURS];
+      var openingCol = whHeaders.indexOf("openingTime") + 1;
+      var closingCol = whHeaders.indexOf("closingTime") + 1;
+      var timezone = getBusinessTimezone_();
+      try {
+        // Corrupt demo-barber-1's WORKING_HOURS rows the same way a real,
+        // already-existing Google Sheet would: openingTime read back as a
+        // Date, closingTime read back as a bare day-fraction Number.
+        var whRows = findRowsWhere_(workingHoursSheet, function (row) { return row.barberId === "demo-barber-1"; });
+        whRows.forEach(function (row) {
+          workingHoursSheet.getRange(row.__row, openingCol, 1, 1).setValues([[parseLocalDateTimeToUtc_("2030-06-15", "08:00", timezone)]]);
+          workingHoursSheet.getRange(row.__row, closingCol, 1, 1).setValues([[16 / 24]]);
+        });
+
+        created = actionCreateAppointment_({
+          idempotencyKey: "test-normalized-time-" + testDate,
+          source: "WEBSITE",
+          serviceId: "demo-service-1",
+          barberId: "demo-barber-1",
+          localDate: testDate,
+          localStartTime: "09:00",
+          customer: { name: "Prueba Horario Normalizado", phoneE164: testPhone },
+        }).appointment;
+
+        if (created.status !== "CONFIRMED" || created.localStartTime !== "09:00" || created.localEndTime !== "09:30") {
+          throw new Error("expected a normal CONFIRMED booking despite corrupted WORKING_HOURS cell types, got " + JSON.stringify(created));
+        }
+      } finally {
+        if (created) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === created.appointmentId; });
+        }
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+        removeDemoData();
+      }
+    },
+  },
 ];
 
 /**

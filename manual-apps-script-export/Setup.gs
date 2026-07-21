@@ -51,7 +51,13 @@ function setupCRM() {
   var spreadsheet = getSpreadsheet_();
 
   CRM_DATA_SHEET_NAMES.forEach(function (name) {
-    getOrCreateSheet_(spreadsheet, name);
+    var sheet = getOrCreateSheet_(spreadsheet, name);
+    // Plain-text format on every date/time/identifier column so a future
+    // write of "08:00"/a numeric-looking phone into that column doesn't get
+    // auto-detected by Sheets as a Date/Number on the next read. Format-only
+    // (never touches a value), safe to re-run against the real, already-
+    // populated production sheet every time setupCRM() runs.
+    applyTextColumnFormats_(sheet, name, SHEET_HEADERS[name]);
   });
 
   seedDefaultSettings_(spreadsheet);

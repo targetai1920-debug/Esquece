@@ -57,6 +57,17 @@ class MockRange {
     }
     return this;
   }
+  setValue(value) {
+    return this.setValues([[value]]);
+  }
+  // Real Sheets: changes only how a cell is *interpreted on future writes*,
+  // never the JS type getValues() already returns for an existing value —
+  // so this mock intentionally does nothing to this.sheet.data. Exists only
+  // so apps-script/Sheets.gs's applyTextColumnFormats_ (called from
+  // setupCRM()) doesn't throw "not a function" in this harness.
+  setNumberFormat() {
+    return this;
+  }
 }
 
 class MockSheet {
@@ -74,6 +85,10 @@ class MockSheet {
   }
   getLastColumn() {
     return this.data[0] ? this.data[0].length : 0;
+  }
+  // Real Sheets: a new sheet defaults to 1000 rows and grows on demand.
+  getMaxRows() {
+    return Math.max(this.data.length, 1000);
   }
   setFrozenRows() {}
   setFrozenColumns() {}
