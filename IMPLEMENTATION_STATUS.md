@@ -790,3 +790,19 @@ Not yet reached — see `CLIENT_INFORMATION_REQUIRED.md` and (once written) the 
 configuration checklist in the final report. Nothing in Phase A–K requires credentials; Apps
 Script deployment, Meta setup, Anthropic key, and Render deployment are the actual external
 gates, all deferred until the credential-independent implementation is complete.
+
+## Independent audit (2026-07-21)
+
+A fresh session re-verified every claim on this page directly against the repository (not from
+prior conversation memory), per explicit instruction not to trust a self-reported "done" without
+checking. Findings: `git status` clean, local `main` = `origin/main` = `a6029f6`. Re-ran, fresh,
+in this session: `npm run lint` (clean), `npm run typecheck` (clean), `npm test` → **10 files,
+88/88 passed**, `npm run test:apps-script` → **22/22 passed**, `npm run build` (succeeded),
+`npm audit` (same 2 moderate `postcss`-in-`next` advisories as previously documented, no new
+ones). Spot-checked `tests/cross-channel.test.ts` (6 tests) and `apps-script/Appointments.gs`
+directly to confirm `LockService.getScriptLock()` (via `withScriptLock_`) genuinely wraps both
+`actionCreateAppointment_` and `actionRescheduleAppointment_`, not just documented as doing so.
+Grepped for hardcoded secrets and confirmed no `.env` file exists in the repo (only
+`.env.example` with blank values). **No credential-independent gap was found; no code changes
+were required.** Added `CLAUDE.md` as a concise durable checkpoint for future sessions (see that
+file for the commit-per-phase table and current invariants) — it did not exist before this audit.
