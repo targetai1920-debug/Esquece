@@ -154,7 +154,7 @@ export function getAnthropicConfig(): AnthropicConfig {
   if (!env.ANTHROPIC_API_KEY) {
     throw new Error("AI_PROVIDER=anthropic but ANTHROPIC_API_KEY is missing. See ANTHROPIC_SETUP.md.");
   }
-  return { apiKey: env.ANTHROPIC_API_KEY, model: env.ANTHROPIC_MODEL || "claude-sonnet-4-5" };
+  return { apiKey: env.ANTHROPIC_API_KEY, model: env.ANTHROPIC_MODEL || "claude-sonnet-5" };
 }
 
 export function getWhatsAppProvider(): "mock" | "meta" {
@@ -194,6 +194,30 @@ export function getMetaConfig(): MetaConfig {
     verifyToken: env.META_VERIFY_TOKEN!,
     graphApiVersion: env.META_GRAPH_API_VERSION,
   };
+}
+
+export interface MetaWebhookConfig {
+  appSecret: string;
+  verifyToken: string;
+}
+
+/**
+ * Deliberately NOT gated on WHATSAPP_PROVIDER=meta (unlike getMetaConfig()
+ * above) — receiving and verifying real Meta webhook traffic is
+ * independent of which provider currently handles *outbound* sends (e.g.
+ * WHATSAPP_PROVIDER could still be "mock" while the webhook itself is
+ * exercised against real or synthetic signed requests, as this repo's own
+ * webhook tests do). Only requires the two webhook-specific secrets.
+ */
+export function getMetaWebhookConfig(): MetaWebhookConfig {
+  const env = raw();
+  const missing: string[] = [];
+  if (!env.META_APP_SECRET) missing.push("META_APP_SECRET");
+  if (!env.META_VERIFY_TOKEN) missing.push("META_VERIFY_TOKEN");
+  if (missing.length > 0) {
+    throw new Error(`WhatsApp webhook requires: ${missing.join(", ")}. See META_SETUP.md.`);
+  }
+  return { appSecret: env.META_APP_SECRET!, verifyToken: env.META_VERIFY_TOKEN! };
 }
 
 export interface AdminAuthConfig {

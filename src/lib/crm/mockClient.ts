@@ -137,6 +137,14 @@ export class MockCrmClient implements CrmClient {
   private conversations: Conversation[] = [];
   private conversationMessages: ConversationMessage[] = [];
   private handoffs: HumanHandoff[] = [];
+  /** Dev/test-only fault injection — see /dev/whatsapp-simulator's "simulate CRM error" control. One-shot, like MockWhatsAppProvider.failNextSend. */
+  failNextCall = false;
+  private maybeFailForTest() {
+    if (this.failNextCall) {
+      this.failNextCall = false;
+      throw new CrmError("INTERNAL_ERROR", "Simulated CRM failure.", true);
+    }
+  }
   private notifications: Notification[] = [];
   private auditEntries: AuditEntry[] = [];
   private webhookEvents = new Map<string, "PROCESSING" | "PROCESSED" | "FAILED">();
@@ -341,6 +349,7 @@ export class MockCrmClient implements CrmClient {
   }
 
   async getAvailability(input: AvailabilityInput): Promise<AvailableSlot[]> {
+    this.maybeFailForTest();
     const service = this.requireActiveService(input.serviceId);
     const totalDuration = service.durationMinutes + (service.bufferMinutes || Number(this.settings.DEFAULT_BUFFER_MINUTES));
     let barberIds: string[];
@@ -468,6 +477,7 @@ export class MockCrmClient implements CrmClient {
   }
 
   async createAppointment(input: CreateAppointmentInput): Promise<CreateAppointmentResult> {
+    this.maybeFailForTest();
     const existingByKey = this.appointments.find((a) => a.idempotencyKey === input.idempotencyKey);
     if (existingByKey) {
       const sameRequest =
@@ -613,6 +623,7 @@ export class MockCrmClient implements CrmClient {
   }
 
   async cancelAppointment(input: CancelAppointmentInput): Promise<Appointment> {
+    this.maybeFailForTest();
     const appointment = input.appointmentId
       ? this.appointments.find((a) => a.appointmentId === input.appointmentId)
       : this.appointments.find((a) => a.reference === input.reference);
@@ -633,6 +644,7 @@ export class MockCrmClient implements CrmClient {
   }
 
   async rescheduleAppointment(input: RescheduleAppointmentInput): Promise<Appointment> {
+    this.maybeFailForTest();
     const appointment = this.appointments.find((a) => a.appointmentId === input.appointmentId);
     if (!appointment) throw new CrmError("APPOINTMENT_NOT_FOUND", "Cita no encontrada.", false);
     if (input.actor.type === "customer") {
@@ -1024,6 +1036,12 @@ export class MockCrmClient implements CrmClient {
       appointmentsThisMonth: this.appointments.filter((a) => a.localDate.startsWith(monthPrefix)).length,
       updatedAt: new Date().toISOString(),
     };
+  }
+
+  /** Test-only: backdates a conversation's lastInboundMessageAt to simulate session expiry (WHATSAPP_AGENT_DESIGN.md §4) without waiting real time out. */
+  _setConversationLastInboundAtForTests(conversationId: string, isoTimestamp: string) {
+    const conversation = this.conversations.find((c) => c.conversationId === conversationId);
+    if (conversation) conversation.lastInboundMessageAt = isoTimestamp;
   }
 }
 

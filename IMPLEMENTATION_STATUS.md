@@ -43,7 +43,7 @@ ever exceeded.
 | F | Secure public booking API for the separate website (not the website itself) | DONE |
 | G | Admin dashboard | DONE |
 | H | WhatsApp infrastructure (webhook, Meta client, dedup) | DONE |
-| I | Claude conversational agent | NOT STARTED |
+| I | Claude conversational agent | DONE |
 | J | Notifications and Calendar sync | NOT STARTED |
 | K | Production hardening | NOT STARTED |
 
@@ -524,45 +524,148 @@ ever exceeded.
   (`/api/whatsapp/webhook` present as a dynamic route). Secret grep clean. `git status` reviewed
   before commit.
 
+- (Phase I) `src/lib/ai/types.ts` — `AiProvider` interface (`interpretMessage`), `AiInterpretation`
+  structured-output contract (`intent`, extracted `serviceName`/`barberName`/`localDate`/
+  `localTime`/`customerName`, `confidence`, `needsHumanHandoff`, `replyDraft`). Mirrors the
+  `CrmClient`/`WhatsAppProvider` pattern exactly.
+- (Phase I) `src/lib/ai/mockProvider.ts` — `MockAiProvider`: deterministic keyword/pattern
+  matching (Spanish greetings, service/barber name matching against the real CRM lists it's given,
+  "hoy"/"mañana"/weekday-name/ISO-date resolution, `HH:mm`/"a las N" time resolution, a loose
+  name-detection fallback) plus a `failNext` one-shot fault-injection hook mirroring
+  `MockWhatsAppProvider.failNextSend`. Explicitly documented as not real NLU.
+- (Phase I) `src/lib/ai/anthropicProvider.ts` — `AnthropicAiProvider`: real Claude integration via
+  `@anthropic-ai/sdk`'s tool-use (forced `tool_choice`), never free-form text parsing — the
+  `interpret_message` tool's `input` is validated against a Zod schema before a single field is
+  trusted. System prompt explicitly lists the real services/barbers/today's date and states
+  Claude must never invent one or mutate booking state directly (master spec §14). Default model
+  updated to `claude-sonnet-5` (previously `claude-sonnet-4-5`) — "default to the latest and most
+  capable Claude model" per this session's operating instructions.
+- (Phase I) `src/lib/ai/factory.ts` — `getAiClient()`, same production-safety pattern as the CRM/
+  WhatsApp factories (refuses `AI_PROVIDER=mock` in production without the explicit unsafe-mock
+  opt-in).
+- (Phase I) `src/lib/conversation/types.ts` — `BookingScratchData` (the exact structured shape
+  persisted as `CONVERSATIONS.scratchDataJson`: service/barber/date/time/name, plus a `flow`
+  discriminator so the shared `SELECTING_DATE`/`SELECTING_TIME`/`AWAITING_CONFIRMATION` states can
+  serve booking, cancel, and reschedule without three separate copies of each).
+- (Phase I) `src/lib/conversation/transitions.ts` — the legal `(fromState, toState)` table
+  (WHATSAPP_AGENT_DESIGN.md §5); every transition the orchestrator produces is checked against it
+  before being committed, so a handler bug that tries an illegal jump throws instead of silently
+  corrupting conversation state. `HUMAN_HANDOFF` is reachable from any non-handoff state (global
+  override) and leavable only through the existing `resolveHumanHandoff` action, never through
+  this table.
+- (Phase I) `src/lib/conversation/deterministicIntent.ts` — matches button/list reply ids,
+  numeric menu choices, and fixed Spanish keywords (confirm/deny/cancel/reschedule/start-over/
+  request-human) *before* ever calling the AI provider (§6 — cheaper and more reliable than an AI
+  round-trip for a fixed choice; also means these never cost a real Anthropic API call).
+- (Phase I) `src/lib/conversation/orchestrator.ts` — `handleInboundTurn()`, the single place that
+  ties CRM + AI + WhatsApp together for one conversation turn. Session-expiry reset (never for an
+  active handoff), records every inbound message even during handoff, global-intent interrupts
+  (human handoff request/complaint, cancel, reschedule, start-over) recognized regardless of
+  current state, then a full per-state dispatcher covering the entire state list: `IDLE` →
+  `SELECTING_SERVICE` → `SELECTING_BARBER` → `SELECTING_DATE` → `SELECTING_TIME` →
+  (`REQUESTING_NAME` if not already known) → `AWAITING_CONFIRMATION` → `BOOKING_CONFIRMED`;
+  `CANCELLING_BOOKING`/`RESCHEDULING_BOOKING` (asks which appointment when more than one is
+  changeable) feeding into the same shared `SELECTING_DATE`/`SELECTING_TIME`/
+  `AWAITING_CONFIRMATION` states via the `flow` discriminator. Every booking/cancel/reschedule
+  mutation calls the exact same `CrmClient` methods the public API and admin dashboard use
+  (`createAppointment`/`cancelAppointment`/`rescheduleAppointment`), so availability is never
+  calculated independently (ARCHITECTURE.md §4/§7) and a booking is never confirmed to the
+  customer before the CRM write actually succeeds. `SLOT_UNAVAILABLE` at confirmation time is
+  handled per master spec §16's "when a slot becomes unavailable during confirmation": explain
+  briefly, fetch fresh availability, preserve everything already collected, offer new slots,
+  never restart the whole flow. A WhatsApp send failure never blocks or rolls back a state change
+  a real CRM mutation already depends on (logged, not silently swallowed).
+- (Phase I) Webhook route (`src/app/api/whatsapp/webhook/route.ts`) now hands every inbound
+  message to `handleInboundTurn()` instead of only recording it — Phase H's dedup/verification
+  stays exactly as it was, this phase builds directly on top of it, per the scope note Phase H's
+  entry above already flagged.
+- (Phase I) **Found and fixed a real test-isolation coupling while wiring this up**:
+  `getMetaConfig()` (the *outbound send* config, gated on `WHATSAPP_PROVIDER=meta`) was also being
+  used by the webhook for *inbound signature verification* — meaning a webhook test that needed
+  `WHATSAPP_PROVIDER=meta` (to make `getMetaConfig()` not throw) would also make
+  `getWhatsAppClient()` construct a real `MetaWhatsAppProvider` for the orchestrator's outbound
+  reply, which performs a real `fetch()` to `graph.facebook.com` — exactly the kind of accidental
+  real-network-call-in-a-test this project's mock-provider discipline exists to prevent. Fixed by
+  splitting a new `getMetaWebhookConfig()` (only `META_APP_SECRET`/`META_VERIFY_TOKEN`, not gated
+  on `WHATSAPP_PROVIDER`) out of `getMetaConfig()` — receiving and verifying real Meta webhook
+  traffic is legitimately independent of which provider currently handles outbound sends. The
+  webhook route now uses `getMetaWebhookConfig()`; `tests/whatsapp-webhook.test.ts` was updated to
+  stop setting `WHATSAPP_PROVIDER=meta` (leaving it at its `mock` default) — caught before it ever
+  caused a hang/failure in CI, by reasoning through the factory wiring while writing this phase,
+  not by a test actually timing out.
+- (Phase I) `src/app/dev/whatsapp-simulator/` + four backing dev-only API routes
+  (`/api/dev/whatsapp-simulator/{state,send,reset,fault}`, all 404 in production via a new shared
+  `lib/http/devOnly.ts` guard) — master spec §20. Runs `handleInboundTurn()` against the exact
+  same process-wide `getCrmClient()`/`getAiClient()`/`getWhatsAppClient()` singletons as the real
+  webhook (**"must not use a separate fake booking calendar"** — literally the same in-memory
+  `MockCrmClient` instance), not a reimplementation. Shows the message transcript, current state,
+  scratch data, and handoff status; supports resetting a conversation and arming a one-shot
+  failure on the CRM, AI, or WhatsApp-send mock (`MockCrmClient.failNextCall`,
+  `MockAiProvider.failNext`, `MockWhatsAppProvider.failNextSend` — the last one already existed
+  from Phase H, the first two added this phase specifically for this simulator).
+- (Phase I) `tests/conversation-orchestrator.test.ts` — 8 tests driving the real orchestrator
+  end-to-end: a full booking (greeting → service → barber → date → time → name → confirm →
+  `BOOKING_CONFIRMED`, with the created appointment verified directly against the CRM);
+  `SLOT_UNAVAILABLE` recovery when a rival booking takes the exact slot between summary and
+  confirmation (asserts no duplicate appointment exists and the conversation didn't falsely
+  confirm); cancellation with a single changeable appointment; cancellation asking which
+  appointment when there are multiple; a full reschedule (old slot verified released — a
+  follow-up booking into it succeeds — new slot verified occupied); human handoff activation,
+  automated replies suppressed while active, inbound messages still recorded, and **no automatic
+  reactivation** (only an explicit `resolveHumanHandoff` call reactivates); session expiry
+  resetting a mid-flow conversation to `IDLE` before processing the next message (using a new
+  test-only `MockCrmClient._setConversationLastInboundAtForTests` hook to backdate the timestamp
+  instead of waiting real time out).
+- (Phase I) **Verified for real, not just unit-tested**: ran the actual dev server and drove the
+  full conversation through the real `/dev/whatsapp-simulator` API routes with `curl` — hola →
+  service selection → barber selection → date → time → name → confirmation → a real `BOOKING_CONFIRMED`
+  reply with a real appointment reference, then armed a CRM fault and reset the conversation,
+  all against the real running Next.js server (not just the Vitest harness).
+- (Phase I) Full quality gate: `npm run lint` clean, `npm run typecheck` clean, `npm test` → 8
+  files, **74/74 passed** (previous 66 + 8 conversation orchestrator), `npm run test:apps-script`
+  → **20/20 passed** (unchanged — no Apps Script changes this phase), `npm run build` succeeded
+  (`/dev/whatsapp-simulator` + 4 new dev API routes present, correctly split static/dynamic).
+  Secret grep clean. `git status` reviewed before commit.
+
 ## In-progress tasks
 
-None — Phases A through H are complete as of this update.
+None — Phases A through I are complete as of this update.
 
 ## Remaining tasks
 
-Everything in Phases I–K — see the phase list in `PROJECT_PLAN.md`: the Claude conversational
-agent (Anthropic/Mock providers, structured output, conversation state machine wiring, booking/
-cancel/reschedule flows built on top of Phase H's webhook, human handoff triggers,
-`/dev/whatsapp-simulator`), notifications/reminders (`/api/cron/notifications`, WhatsApp
-templates, optional Calendar sync), and production hardening (Render deployment docs, remaining
-setup guides, final cross-channel test suite, final report).
+Everything in Phases J–K — see the phase list in `PROJECT_PLAN.md`: notifications/reminders
+(`/api/cron/notifications` protected by `CRON_SECRET`, WhatsApp template handling for the 24-hour
+window, optional Google Calendar sync — Google Sheets stays authoritative either way), and
+production hardening (Render deployment docs, remaining setup guides — `META_SETUP.md`,
+`ANTHROPIC_SETUP.md`, `RENDER_SETUP.md`, `DEPLOYMENT.md`, `TESTING.md`, `OPERATIONS.md`,
+`LIMITATIONS.md` — the final cross-channel test suite, and the final report).
 
 ## Blockers
 
-None credential-related yet — Phases I onward remain credential-independent until Phase K's
-external configuration gate, except that Phase H/I's *live* behavior (real Meta webhook traffic,
-real Claude calls) can only be verified against mocks/synthetic signed requests until Meta/
-Anthropic credentials exist (which is exactly what this phase's verification honestly represents
-— see the bullet above). The one real external step still pending since Phase B is an actual Apps
-Script deployment to confirm this session's mock/vm-harness-based verification holds up in the
-real Google environment — not a blocker to continuing, just an honestly-labeled gap (see
-`apps-script/README.md`).
+None credential-related yet — Phase J/K remain credential-independent until the final external
+configuration gate, except that Phase H/I's *live* behavior (real Meta webhook traffic, real
+Claude calls) can only be verified against mocks/synthetic signed requests until Meta/Anthropic
+credentials exist (exactly what this and the prior phase's verification honestly represent). The
+one real external step still pending since Phase B is an actual Apps Script deployment to confirm
+this session's mock/vm-harness-based verification holds up in the real Google environment — not a
+blocker to continuing, just an honestly-labeled gap (see `apps-script/README.md`).
 
 ## Latest commit
 
-Phase H committed and pushed — see the session's final report for the exact hash (this file is
-updated in the same commit as Phase H's code, so `git log -1` in the repo is the authoritative
+Phase I committed and pushed — see the session's final report for the exact hash (this file is
+updated in the same commit as Phase I's code, so `git log -1` in the repo is the authoritative
 source if this line is ever stale).
 
 ## Tests last executed
 
-Post-Phase-H (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 7
-files, **66/66 passed** (5 phone + 6 signing + 20 MockCrmClient + 9 public API + 5 admin API + 11
-WhatsApp provider + 10 WhatsApp webhook), `npm run test:apps-script` → **20/20 passed**, `npm run
-build` succeeded. Additionally verified live: ran `npm run dev` and drove the Meta webhook's `GET`
-handshake and a real-HMAC-signed `POST` against the real running server (see the detailed bullet
-above) — real end-to-end proof for this repo's own webhook surface, using locally-generated fake
-Meta credentials (no real Meta account/traffic involved yet).
+Post-Phase-I (this session): `npm run lint` clean, `npm run typecheck` clean, `npm test` → 8
+files, **74/74 passed** (5 phone + 6 signing + 20 MockCrmClient + 9 public API + 5 admin API + 11
+WhatsApp provider + 10 WhatsApp webhook + 8 conversation orchestrator), `npm run test:apps-script`
+→ **20/20 passed**, `npm run build` succeeded. Additionally verified live: ran `npm run dev` and
+drove a complete booking conversation through the real `/dev/whatsapp-simulator` API routes with
+`curl` against the real running server (see the detailed bullet above) — real end-to-end proof
+for this repo's own conversational-agent surface, using `AI_PROVIDER=mock`/`CRM_PROVIDER=mock`/
+`WHATSAPP_PROVIDER=mock` (no real Anthropic/Meta credentials involved yet).
 
 ## External configuration still required
 

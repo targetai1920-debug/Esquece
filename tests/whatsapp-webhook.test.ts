@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { NextRequest } from "next/server";
 import { _resetCrmClientForTests, getCrmClient } from "@/lib/crm/factory";
 import { _resetEnvCacheForTests } from "@/lib/env/server";
+import { _resetWhatsAppClientForTests } from "@/lib/whatsapp/factory";
 import { GET, POST } from "@/app/api/whatsapp/webhook/route";
 
 /**
@@ -10,16 +11,17 @@ import { GET, POST } from "@/app/api/whatsapp/webhook/route";
  * — proves signature verification, GET verification, dedup, and payload
  * classification (text / interactive / unsupported / status-only / multiple
  * events) all work through the real request/response path, not just in
- * isolated unit tests of signature.ts.
+ * isolated unit tests of signature.ts. WHATSAPP_PROVIDER is deliberately
+ * left at its "mock" default (not "meta") — the webhook's own verification
+ * only needs META_APP_SECRET/META_VERIFY_TOKEN (getMetaWebhookConfig(), not
+ * gated on WHATSAPP_PROVIDER); leaving outbound sends on MockWhatsAppProvider
+ * means these tests never make a real network call, even though the
+ * orchestrator they trigger does send an automated reply.
  */
 
 const APP_SECRET = "test-meta-app-secret";
 const VERIFY_TOKEN = "test-verify-token";
 
-process.env.WHATSAPP_PROVIDER = "meta";
-process.env.WHATSAPP_ACCESS_TOKEN = "test-access-token";
-process.env.WHATSAPP_PHONE_NUMBER_ID = "1234567890";
-process.env.WHATSAPP_BUSINESS_ACCOUNT_ID = "0987654321";
 process.env.META_APP_SECRET = APP_SECRET;
 process.env.META_VERIFY_TOKEN = VERIFY_TOKEN;
 
@@ -63,6 +65,7 @@ describe("WhatsApp webhook", () => {
   beforeEach(() => {
     _resetEnvCacheForTests();
     _resetCrmClientForTests();
+    _resetWhatsAppClientForTests();
   });
 
   it("GET verification succeeds with the correct mode/token and echoes the challenge", async () => {

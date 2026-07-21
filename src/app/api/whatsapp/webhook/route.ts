@@ -1,6 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getMetaConfig } from "@/lib/env/server";
+import { getMetaWebhookConfig } from "@/lib/env/server";
 import { getCrmClient } from "@/lib/crm/factory";
+import { getAiClient } from "@/lib/ai/factory";
+import { getWhatsAppClient } from "@/lib/whatsapp/factory";
+import { handleInboundTurn } from "@/lib/conversation/orchestrator";
 import { logger } from "@/lib/logging/logger";
 import { normalizeWaId } from "@/lib/whatsapp/phone";
 import { verifyMetaSignature, verifyTokenMatches } from "@/lib/whatsapp/signature";
@@ -9,12 +12,11 @@ import type { CrmClient } from "@/lib/crm/types";
 
 /**
  * Meta WhatsApp Cloud API webhook — WHATSAPP_AGENT_DESIGN.md §1. Direct
- * Next.js route (never Apps Script — master spec §12). This route's scope
- * is infrastructure only (Phase H): verify, parse, deduplicate, normalize
- * the sender, load/create the customer and conversation, and persist the
- * inbound message. Composing and sending an automated reply is Phase I
- * (the Claude agent) — building on top of the conversation this route
- * already guarantees exists and has recorded every message into.
+ * Next.js route (never Apps Script — master spec §12). Verifies, parses,
+ * and deduplicates every event (Phase H), then hands each inbound message
+ * to the conversation orchestrator (Phase I), which is the only thing that
+ * interprets intent, mutates conversation state, and calls CRM/AI/WhatsApp
+ * — this route never does any of that itself.
  */
 
 export async function GET(request: NextRequest) {
@@ -23,7 +25,7 @@ export async function GET(request: NextRequest) {
   const token = params.get("hub.verify_token");
   const challenge = params.get("hub.challenge");
 
-  const config = getMetaConfig();
+  const config = getMetaWebhookConfig();
   if (mode === "subscribe" && verifyTokenMatches(token, config.verifyToken) && challenge) {
     return new NextResponse(challenge, { status: 200 });
   }
@@ -31,7 +33,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const config = getMetaConfig();
+  const config = getMetaWebhookConfig();
 
   // Raw body first — the signature is computed over these exact bytes, not
   // a re-serialized parse of them (WHATSAPP_AGENT_DESIGN.md §1).
@@ -109,18 +111,17 @@ async function handleInboundMessage(crm: CrmClient, value: ChangeValue, message:
     return;
   }
 
-  const contactName = findContactName(value, message.from);
-  const customer = await crm.upsertCustomer({ phoneE164, name: contactName, source: "WHATSAPP" });
-  const conversation = await crm.getOrCreateConversation(phoneE164);
-
-  await crm.appendConversationMessage(conversation.conversationId, {
-    direction: "INBOUND",
-    messageType: message.type,
-    body: messageTextBody(message) || interactiveReplyId(message) || `[${message.type}]`,
-    externalMessageId: message.id,
-  });
-
-  void customer; // upserted for its side effect (creates/updates the CUSTOMERS row); not otherwise needed in this phase.
+  await handleInboundTurn(
+    { crm, ai: getAiClient(), whatsapp: getWhatsAppClient() },
+    {
+      phoneE164,
+      externalMessageId: message.id,
+      messageType: message.type,
+      messageText: messageTextBody(message) || interactiveReplyId(message) || `[${message.type}]`,
+      interactiveReplyId: interactiveReplyId(message),
+      contactName: findContactName(value, message.from),
+    },
+  );
 
   await crm.markWebhookEventProcessed(message.id);
 }

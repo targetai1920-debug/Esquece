@@ -13,9 +13,19 @@ data carries over, only the infrastructure pattern.
 
 > Implemented 2026-07-21 (Phase H): §1–§3 (webhook route, phone normalization, dedup) are built
 > and tested — see `IMPLEMENTATION_STATUS.md`'s Phase H entry for exactly what was verified and
-> how. §4 onward (conversation state machine wiring, the actual booking/cancel/reschedule flows,
-> human handoff triggers, Claude integration) is Phase I, not yet built — this document describes
-> the target design for both, not a claim that all of it exists yet.
+> how.
+>
+> Implemented 2026-07-21 (Phase I): §4–§9 (conversation state machine, the booking/cancel/
+> reschedule flows, human handoff triggers, Claude/mock AI integration) are built and tested —
+> see `IMPLEMENTATION_STATUS.md`'s Phase I entry. Two documented simplifications versus the
+> fullest reading of this design: (1) `REVIEWING_BOOKING` is a legal state in the enum but the
+> orchestrator moves straight from name-collection to `AWAITING_CONFIRMATION` in the same turn
+> rather than persisting a separate resting step; (2) "ask which appointment when multiple exist"
+> (§17) uses a numbered list + numeric reply, not a WhatsApp interactive list message (the
+> `WhatsAppProvider.sendInteractiveList` capability exists and is used elsewhere — service/date/
+> time menus in the real Meta implementation would reasonably use it too; the current orchestrator
+> sends plain numbered text for all menus, real interactive buttons/lists are an optional
+> follow-up, not a correctness gap).
 
 ## 1. Webhook endpoints (`src/app/api/whatsapp/webhook/route.ts`)
 
