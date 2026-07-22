@@ -129,14 +129,18 @@ function removeDemoRowsFromSheet_(spreadsheet, sheetName) {
   });
 }
 
+/** Returns the number of rows actually removed (0 if the sheet doesn't exist yet) — used by resetInternalTestEnvironment_() to report what it cleaned up. */
 function removeRowsMatching_(spreadsheet, sheetName, predicate) {
   var sheet = spreadsheet.getSheetByName(sheetName);
-  if (!sheet) return;
+  if (!sheet) return 0;
   var rows = sheetToObjects_(sheet);
+  var removed = 0;
   // Delete from the bottom up so earlier row numbers stay valid.
   for (var i = rows.length - 1; i >= 0; i--) {
     if (predicate(rows[i])) {
       sheet.deleteRow(rows[i].__row);
+      removed++;
     }
   }
+  return removed;
 }

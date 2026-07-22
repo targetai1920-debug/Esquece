@@ -63,7 +63,7 @@ var DEFAULT_SETTINGS_ROWS_ = [
  * COLUMN_FORMAT_VERSION_ if the column classification itself ever changes
  * and existing sheets need it reapplied.
  */
-var COLUMN_FORMAT_VERSION_ = "1";
+var COLUMN_FORMAT_VERSION_ = "2"; // bumped: forces one more reformat pass on an existing sheet after the Sheets.gs read/write fixes below
 var COLUMN_FORMAT_VERSION_PROPERTY_ = "CRM_COLUMN_FORMAT_VERSION_APPLIED";
 
 function columnFormatsAreUpToDate_() {

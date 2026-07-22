@@ -2,7 +2,13 @@
  * Internal test runner. Only exercises pure logic and non-destructive
  * structural checks against the real bound spreadsheet — every test cleans
  * up its own rows in a `finally` block, regardless of pass/fail, and none
- * of them delete a sheet or touch a row a test didn't create itself.
+ * of them delete a sheet or touch a row a test didn't create itself. No
+ * test writes real, persistent Script Properties for Calendar
+ * configuration either — see Calendar.gs's CALENDAR_SYNC_ENABLED_OVERRIDE_
+ * FOR_TESTS_/CALENDAR_ID_OVERRIDE_FOR_TESTS_ — specifically so a mid-test
+ * timeout (Apps Script killing the execution before `finally` runs) can't
+ * leave real production configuration corrupted. If an *older* run ever
+ * did leave something behind, resetInternalTestEnvironment() cleans it up.
  *
  * Split into five batches (INTERNAL_TESTS_CORE_/SHEETS_/BOOKING_/
  * CONVERSATIONS_/INTEGRATIONS_) run via runInternalTestsCore() etc. —
@@ -11,10 +17,12 @@
  * Sheets latency to exceed Apps Script's ~6-minute execution limit before
  * ever printing a summary. Each batch function is small enough to finish
  * well under that limit on its own; getInternalTestSummary()/
- * showInternalTestSummary() combine results across separate batch runs
+ * logInternalTestSummary() combine results across separate batch runs
  * (persisted in Script Properties) into one total/passed/failed/skipped
- * report. runAllInternalTests() still runs everything in one call — kept
- * for the local Node vm harness (npm run test:apps-script), which has no
+ * report. Call logInternalTestSummary() (not showInternalTestSummary(),
+ * which alerts and is menu-only) for manual validation from the editor.
+ * runAllInternalTests() still runs everything in one call — kept for the
+ * local Node vm harness (npm run test:apps-script), which has no
  * execution-time limit and no real Sheets API latency. See FIRST_RUN.md
  * for the exact real-deployment workflow.
  */
@@ -94,6 +102,26 @@ function makeFakeCalendarAppForTests_() {
       return fakeCalendar; // any id resolves to this one in-memory fake — never a real calendar
     },
   };
+}
+
+/**
+ * Builds a Date the same way real Google Sheets hands one back for a
+ * date/time-of-day cell it auto-parsed from a literal string: a pure
+ * calendar/serial value with no timezone concept attached at all — plain
+ * Date.UTC() construction, never routed through parseLocalDateTimeToUtc_
+ * or any other business-timezone-aware helper. This is deliberate: an
+ * earlier version of this fixture used parseLocalDateTimeToUtc_ (a
+ * genuinely timezone-aware conversion), which models a *different* thing
+ * than what Sheets actually does, and masked the real bug this file's
+ * tests exist to catch (see normalizeLocalTimeCellValue_/
+ * normalizeLocalDateCellValue_'s comments in Sheets.gs for the full
+ * postmortem). `year`/`month`/`day` can be any real calendar date — Sheets
+ * itself anchors time-only cells near 1899-12-30, but the fix must not
+ * depend on that (or any other) specific epoch, so these tests
+ * deliberately exercise more than one.
+ */
+function makeSheetsStyleDateForTests_(year, month, day, hour, minute) {
+  return new Date(Date.UTC(year, month - 1, day, hour || 0, minute || 0));
 }
 
 // =====================================================================
@@ -284,11 +312,28 @@ var INTERNAL_TESTS_SHEETS_ = [
     },
   },
   {
-    name: "normalizeLocalTimeCellValue_ resolves a Date-typed cell (Sheets auto-parsing \"08:00\") back to \"08:00\"",
+    // Uses Sheets' actual time-cell epoch (1899-12-30) on purpose — this is
+    // exactly the value a real Google Sheet hands back for a "09:00" cell,
+    // and the fix must handle it via UTC accessors alone, not by depending
+    // on (or accidentally being correct only away from) that epoch.
+    name: "normalizeLocalTimeCellValue_ resolves a real Sheets-style Date serial representing 09:00 back to \"09:00\"",
     run: function () {
-      var timezone = getBusinessTimezone_();
-      var asDate = parseLocalDateTimeToUtc_("2030-06-15", "08:00", timezone);
-      assertEqual_(normalizeLocalTimeCellValue_(asDate), "08:00", "Date-typed time cell");
+      var asDate = makeSheetsStyleDateForTests_(1899, 12, 30, 9, 0);
+      assertEqual_(normalizeLocalTimeCellValue_(asDate), "09:00", "Sheets-style time serial (1899 epoch)");
+    },
+  },
+  {
+    name: "normalizeLocalTimeCellValue_ resolves a Sheets-style Date serial on a modern date back to the same time",
+    run: function () {
+      var asDate = makeSheetsStyleDateForTests_(2030, 6, 15, 8, 0);
+      assertEqual_(normalizeLocalTimeCellValue_(asDate), "08:00", "Sheets-style time serial (modern date)");
+    },
+  },
+  {
+    name: "normalizeLocalDateCellValue_ resolves a real Sheets-style Date serial representing 2026-07-27 back to \"2026-07-27\"",
+    run: function () {
+      var asDate = makeSheetsStyleDateForTests_(2026, 7, 27, 0, 0);
+      assertEqual_(normalizeLocalDateCellValue_(asDate), "2026-07-27", "Sheets-style date serial");
     },
   },
   {
@@ -360,6 +405,21 @@ var INTERNAL_TESTS_BOOKING_ = [
         });
         createdAppointmentIds.push(first.appointment.appointmentId);
 
+        // Explicitly re-read appointment 1 fresh from the sheet (not the
+        // in-memory object actionCreateAppointment_ returned) before
+        // attempting the second booking — the overlap check the second
+        // attempt depends on reads exactly this way, and a real Google
+        // Sheet round trip is exactly where localStartTime/localEndTime
+        // previously came back corrupted (Sheets.gs's Date/Number
+        // normalization bug).
+        var firstReread = getAppointmentById_(first.appointment.appointmentId);
+        if (firstReread.localDate !== testDate || firstReread.localStartTime !== "09:00") {
+          throw new Error(
+            "expected the first appointment's re-read localDate/localStartTime to still be " +
+              testDate + "/09:00, got " + firstReread.localDate + "/" + firstReread.localStartTime,
+          );
+        }
+
         assertThrowsCode_(function () {
           var second = actionCreateAppointment_({
             idempotencyKey: "test-race-key-b-" + testDate,
@@ -414,6 +474,19 @@ var INTERNAL_TESTS_BOOKING_ = [
         var matchingRows = findRowsWhere_(getAppointmentsSheet_(), function (row) { return row.idempotencyKey === idemKey; });
         if (matchingRows.length !== 1) {
           throw new Error("expected exactly 1 row for this idempotency key, found " + matchingRows.length);
+        }
+        // Re-read fresh from the sheet — the retry's own idempotency-key
+        // lookup (actionCreateAppointment_'s existingByKey check) already
+        // exercises exactly this real-Sheets round trip, but assert it
+        // explicitly too: the same request/data comparison that check
+        // relies on depends on localDate/localStartTime coming back exactly
+        // as requested, not corrupted by Sheets' Date/Number coercion.
+        var reread = getAppointmentById_(firstAttempt.appointment.appointmentId);
+        if (reread.localDate !== testDate || reread.localStartTime !== "09:00") {
+          throw new Error(
+            "expected the re-read appointment's localDate/localStartTime to still be " +
+              testDate + "/09:00, got " + reread.localDate + "/" + reread.localStartTime,
+          );
         }
       } finally {
         removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.idempotencyKey === idemKey; });
@@ -483,14 +556,14 @@ var INTERNAL_TESTS_BOOKING_ = [
       var whHeaders = SHEET_HEADERS[SHEET_NAMES.WORKING_HOURS];
       var openingCol = whHeaders.indexOf("openingTime") + 1;
       var closingCol = whHeaders.indexOf("closingTime") + 1;
-      var timezone = getBusinessTimezone_();
       try {
         // Corrupt demo-barber-1's WORKING_HOURS rows the same way a real,
         // already-existing Google Sheet would: openingTime read back as a
-        // Date, closingTime read back as a bare day-fraction Number.
+        // Sheets-style Date serial, closingTime read back as a bare
+        // day-fraction Number.
         var whRows = findRowsWhere_(workingHoursSheet, function (row) { return row.barberId === "demo-barber-1"; });
         whRows.forEach(function (row) {
-          workingHoursSheet.getRange(row.__row, openingCol, 1, 1).setValues([[parseLocalDateTimeToUtc_("2030-06-15", "08:00", timezone)]]);
+          workingHoursSheet.getRange(row.__row, openingCol, 1, 1).setValues([[makeSheetsStyleDateForTests_(1899, 12, 30, 8, 0)]]);
           workingHoursSheet.getRange(row.__row, closingCol, 1, 1).setValues([[16 / 24]]);
         });
 
@@ -506,6 +579,48 @@ var INTERNAL_TESTS_BOOKING_ = [
 
         if (created.status !== "CONFIRMED" || created.localStartTime !== "09:00" || created.localEndTime !== "09:30") {
           throw new Error("expected a normal CONFIRMED booking despite corrupted WORKING_HOURS cell types, got " + JSON.stringify(created));
+        }
+      } finally {
+        if (created) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === created.appointmentId; });
+        }
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "creating an appointment then re-reading it from the sheet preserves localDate/localStartTime/localEndTime exactly",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var testPhone = "59100000015";
+      var created;
+      try {
+        created = actionCreateAppointment_({
+          idempotencyKey: "test-roundtrip-" + testDate,
+          source: "WEBSITE",
+          serviceId: "demo-service-1",
+          barberId: "demo-barber-1",
+          localDate: testDate,
+          localStartTime: "09:00",
+          customer: { name: "Prueba Round Trip", phoneE164: testPhone },
+        }).appointment;
+
+        // Re-read from the sheet fresh — not the in-memory object the
+        // create action returned (which never touches Sheets' own
+        // read-back type coercion at all) — to prove the *stored* value
+        // survives a real round trip, not just what we happened to write.
+        var reread = getAppointmentById_(created.appointmentId);
+        if (reread.localDate !== testDate) {
+          throw new Error("expected re-read localDate " + testDate + ", got " + reread.localDate);
+        }
+        if (reread.localStartTime !== "09:00") {
+          throw new Error("expected re-read localStartTime 09:00, got " + reread.localStartTime);
+        }
+        if (reread.localEndTime !== "09:30") {
+          throw new Error("expected re-read localEndTime 09:30, got " + reread.localEndTime);
         }
       } finally {
         if (created) {
@@ -654,9 +769,15 @@ var INTERNAL_TESTS_INTEGRATIONS_ = [
       var newDate = nextWeekdayLocalDate_(testDate, 1);
       var created;
       try {
+        // In-memory overrides only (Calendar.gs) — never real Script
+        // Properties. If Apps Script kills this execution on a timeout
+        // before `finally` runs, a real ENABLE_CALENDAR_SYNC/
+        // GOOGLE_CALENDAR_ID Script Property would stay corrupted for
+        // every later execution; a plain top-level `var` can't do that —
+        // it's back to null the moment this execution ends, killed or not.
         CALENDAR_APP_FOR_TESTS_ = makeFakeCalendarAppForTests_();
-        PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "true");
-        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "fake-calendar-for-tests");
+        CALENDAR_SYNC_ENABLED_OVERRIDE_FOR_TESTS_ = true;
+        CALENDAR_ID_OVERRIDE_FOR_TESTS_ = "fake-calendar-for-tests";
 
         created = actionCreateAppointment_({
           idempotencyKey: "test-calendar-adapter-" + testPhone,
@@ -682,10 +803,11 @@ var INTERNAL_TESTS_INTEGRATIONS_ = [
           throw new Error("expected calendarSyncStatus CANCELLED after cancelling a synced appointment");
         }
       } finally {
-        // Never leave the fake installed — a real booking must always reach real CalendarApp.
+        // Never leave any override installed — a real booking must always
+        // reach real CalendarApp with real Script Properties.
         CALENDAR_APP_FOR_TESTS_ = null;
-        PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "false");
-        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "");
+        CALENDAR_SYNC_ENABLED_OVERRIDE_FOR_TESTS_ = null;
+        CALENDAR_ID_OVERRIDE_FOR_TESTS_ = null;
         if (created) {
           removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === created.appointmentId; });
           removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.appointmentId === created.appointmentId; });
@@ -704,13 +826,16 @@ var INTERNAL_TESTS_INTEGRATIONS_ = [
       var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
       var failing;
       try {
-        PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "true");
+        // In-memory overrides only — same reasoning as the adapter test
+        // above (never real Script Properties, so a mid-test timeout can't
+        // leave real ENABLE_CALENDAR_SYNC/GOOGLE_CALENDAR_ID corrupted).
         // Deliberately real CalendarApp here (CALENDAR_APP_FOR_TESTS_ is not
         // set) — this id can never resolve to a real, accessible calendar,
         // so this proves the non-destructive-failure path against the
         // genuine CalendarApp.getCalendarById() behavior without ever
         // creating a real calendar.
-        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "invalid-calendar-id-for-test");
+        CALENDAR_SYNC_ENABLED_OVERRIDE_FOR_TESTS_ = true;
+        CALENDAR_ID_OVERRIDE_FOR_TESTS_ = "invalid-calendar-id-for-test";
 
         failing = actionCreateAppointment_({
           idempotencyKey: "test-calendar-failure-" + testPhone,
@@ -731,8 +856,8 @@ var INTERNAL_TESTS_INTEGRATIONS_ = [
           throw new Error("expected a CALENDAR_SYNC_FAILURE notification to be queued when Calendar sync fails");
         }
       } finally {
-        PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "false");
-        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "");
+        CALENDAR_SYNC_ENABLED_OVERRIDE_FOR_TESTS_ = null;
+        CALENDAR_ID_OVERRIDE_FOR_TESTS_ = null;
         if (failing) {
           removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === failing.appointmentId; });
           removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.appointmentId === failing.appointmentId; });
@@ -893,21 +1018,96 @@ function getInternalTestSummary() {
 }
 
 /**
- * Logs and (in the spreadsheet UI) alerts the combined summary. Directly
- * runnable from the Apps Script editor or the "Esquece CRM" menu.
+ * Logs the combined summary and returns it — no UI interaction of any
+ * kind, so it can never block or hang. This is the one to call for manual
+ * validation from the Apps Script editor's Run button: showInternalTestSummary()
+ * calls SpreadsheetApp.getUi().alert(), which — invoked from the editor
+ * rather than the spreadsheet's own menu — has no real dialog to show the
+ * result to and can sit waiting until the execution itself times out.
  */
-function showInternalTestSummary() {
+function logInternalTestSummary() {
   var summary = getInternalTestSummary();
   Logger.log(JSON.stringify(summary, null, 2));
-  try {
-    SpreadsheetApp.getUi().alert(
-      "Pruebas internas — " + summary.passed + " OK, " + summary.failed + " fallidas, " +
-        summary.skipped + " pendientes (de " + summary.total + ").",
-    );
-  } catch (e) {
-    // Not running in a spreadsheet UI context (e.g. headless, or from the Node test harness) — logging is enough.
-  }
   return summary;
+}
+
+/**
+ * Same as logInternalTestSummary(), plus a spreadsheet UI alert — only
+ * ever call this from the "Esquece CRM" spreadsheet menu (onOpen() in
+ * Menu.gs), where a real dialog genuinely exists to show it in. Calling
+ * this from the Apps Script editor's Run button instead has no such
+ * dialog and can hang until the execution times out — use
+ * logInternalTestSummary() there instead.
+ */
+function showInternalTestSummary() {
+  var summary = logInternalTestSummary();
+  SpreadsheetApp.getUi().alert(
+    "Pruebas internas — " + summary.passed + " OK, " + summary.failed + " fallidas, " +
+      summary.skipped + " pendientes (de " + summary.total + ").",
+  );
+  return summary;
+}
+
+/**
+ * Manual sanitation for a real Apps Script deployment — run this if a
+ * previous execution was killed by Apps Script's own timeout mid-test
+ * (before its own `finally` cleanup ran) and may have left test rows or
+ * legacy Script-Property contamination behind. Safe to run any time,
+ * including against a sheet with no contamination at all (a no-op then).
+ * Never touches real business data: only removes rows matching this test
+ * suite's own well-known test-data markers (the "591000000..." phone
+ * prefix every test in this file uses, and the "Prueba interna" service
+ * name prefix the admin-CRUD test uses), and only resets
+ * ENABLE_CALENDAR_SYNC/GOOGLE_CALENDAR_ID if GOOGLE_CALENDAR_ID currently
+ * holds one of this test suite's own known sentinel values — never a
+ * real, intentionally-configured one. (Ordinary test runs no longer write
+ * these two Script Properties at all — see Calendar.gs's
+ * CALENDAR_SYNC_ENABLED_OVERRIDE_FOR_TESTS_/CALENDAR_ID_OVERRIDE_FOR_TESTS_
+ * — this only cleans up contamination left by an *older* version of this
+ * test suite, or a run that predates that fix.)
+ */
+var KNOWN_TEST_PHONE_PREFIX_ = "591000000";
+var KNOWN_TEST_SERVICE_NAME_PREFIX_ = "Prueba interna";
+var KNOWN_TEST_CALENDAR_ID_SENTINELS_ = ["invalid-calendar-id-for-test", "test-calendar-for-esquece", "fake-calendar-for-tests"];
+
+function resetInternalTestEnvironment() {
+  CALENDAR_APP_FOR_TESTS_ = null;
+  CALENDAR_SYNC_ENABLED_OVERRIDE_FOR_TESTS_ = null;
+  CALENDAR_ID_OVERRIDE_FOR_TESTS_ = null;
+
+  removeDemoData();
+
+  var testDataSheets = [
+    SHEET_NAMES.CUSTOMERS, SHEET_NAMES.APPOINTMENTS, SHEET_NAMES.CONVERSATIONS,
+    SHEET_NAMES.CONVERSATION_MESSAGES, SHEET_NAMES.NOTIFICATIONS, SHEET_NAMES.WEBHOOK_EVENTS,
+  ];
+  var removedTestRows = 0;
+  testDataSheets.forEach(function (name) {
+    removedTestRows += removeRowsMatching_(getSpreadsheet_(), name, function (row) {
+      var phone = row.phoneE164 || row.customerPhoneSnapshot;
+      return typeof phone === "string" && phone.indexOf(KNOWN_TEST_PHONE_PREFIX_) === 0;
+    });
+  });
+
+  var removedTestServices = removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.SERVICES, function (row) {
+    return typeof row.name === "string" && row.name.indexOf(KNOWN_TEST_SERVICE_NAME_PREFIX_) === 0;
+  });
+
+  var currentCalendarId = getScriptProperty_(SCRIPT_PROPERTY_KEYS.GOOGLE_CALENDAR_ID);
+  var resetCalendarProperties = KNOWN_TEST_CALENDAR_ID_SENTINELS_.indexOf(currentCalendarId) !== -1;
+  if (resetCalendarProperties) {
+    PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "false");
+    PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "");
+  }
+
+  var result = {
+    ok: true,
+    removedTestRows: removedTestRows,
+    removedTestServices: removedTestServices,
+    resetCalendarProperties: resetCalendarProperties,
+  };
+  Logger.log("resetInternalTestEnvironment() — " + JSON.stringify(result));
+  return result;
 }
 
 /**

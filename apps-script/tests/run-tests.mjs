@@ -64,9 +64,22 @@ class MockRange {
   // never the JS type getValues() already returns for an existing value —
   // so this mock intentionally does nothing to this.sheet.data. Exists only
   // so apps-script/Sheets.gs's applyTextColumnFormats_ (called from
-  // setupCRM()) doesn't throw "not a function" in this harness.
+  // setupCRM()) and writeRowRobustly_ (called from every row write) don't
+  // throw "not a function" in this harness.
   setNumberFormat() {
     return this;
+  }
+  getNumberFormats() {
+    const out = [];
+    for (let r = 0; r < this.numRows; r++) {
+      const rowOut = [];
+      for (let c = 0; c < this.numCols; c++) rowOut.push("General");
+      out.push(rowOut);
+    }
+    return out;
+  }
+  setNumberFormats() {
+    return this; // same no-op reasoning as setNumberFormat() above
   }
 }
 
@@ -85,6 +98,11 @@ class MockSheet {
   }
   getLastColumn() {
     return this.data[0] ? this.data[0].length : 0;
+  }
+  // Real Sheets: the last row index with any content (1-indexed) — Sheets.gs's
+  // writeRowRobustly_ appends at getLastRow() + 1 instead of Sheet#appendRow().
+  getLastRow() {
+    return this.data.length;
   }
   // Real Sheets: a new sheet defaults to 1000 rows and grows on demand.
   getMaxRows() {

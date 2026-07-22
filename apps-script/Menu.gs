@@ -25,6 +25,7 @@ function onOpen() {
     // is exactly what exceeded the 6-minute limit against a real
     // spreadsheet (see FIRST_RUN.md). runAllInternalTests() itself still
     // exists, for the local Node test harness only.
+    .addItem("Pruebas internas: sanear entorno", "resetInternalTestEnvironment")
     .addItem("Pruebas internas: limpiar resumen", "clearInternalTestSummary")
     .addItem("Pruebas internas: 1) Core", "runInternalTestsCore")
     .addItem("Pruebas internas: 2) Sheets", "runInternalTestsSheets")

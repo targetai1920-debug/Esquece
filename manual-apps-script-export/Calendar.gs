@@ -12,8 +12,33 @@
  * function here is a no-op and booking continues exactly as before.
  */
 
+/**
+ * Test-only seams: when non-null, these override the real Script
+ * Properties/CalendarApp for the duration of the current execution only.
+ * Always null in production. Only Tests.gs's Calendar tests set these —
+ * and deliberately as plain in-memory variables, never by writing to real
+ * Script Properties (PropertiesService), because Apps Script can kill an
+ * execution mid-test on a timeout before its own `finally` cleanup runs;
+ * a real Script Property written that way would stay corrupted (real
+ * ENABLE_CALENDAR_SYNC=true / GOOGLE_CALENDAR_ID=<test value>) across every
+ * later execution until someone noticed and fixed it by hand. A plain
+ * top-level `var` can't do that: every fresh Apps Script execution (each
+ * manual batch run, each real webhook/API call) starts with a brand-new
+ * global scope, so these are guaranteed back to null the moment one
+ * execution ends, killed by a timeout or not — no cleanup step required.
+ */
+var CALENDAR_SYNC_ENABLED_OVERRIDE_FOR_TESTS_ = null;
+var CALENDAR_ID_OVERRIDE_FOR_TESTS_ = null;
+
 function calendarSyncEnabled_() {
-  return isCalendarSyncEnabled_() && !!getGoogleCalendarId_();
+  var enabled = CALENDAR_SYNC_ENABLED_OVERRIDE_FOR_TESTS_ !== null
+    ? CALENDAR_SYNC_ENABLED_OVERRIDE_FOR_TESTS_
+    : isCalendarSyncEnabled_();
+  return enabled && !!getEffectiveGoogleCalendarId_();
+}
+
+function getEffectiveGoogleCalendarId_() {
+  return CALENDAR_ID_OVERRIDE_FOR_TESTS_ !== null ? CALENDAR_ID_OVERRIDE_FOR_TESTS_ : getGoogleCalendarId_();
 }
 
 /**
@@ -34,7 +59,7 @@ function getCalendarAppProvider_() {
 }
 
 function getSyncCalendar_() {
-  var calendarId = getGoogleCalendarId_();
+  var calendarId = getEffectiveGoogleCalendarId_();
   var calendar = getCalendarAppProvider_().getCalendarById(calendarId);
   if (!calendar) {
     throw new Error("Google Calendar not found or not accessible: " + calendarId);

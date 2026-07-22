@@ -163,19 +163,53 @@ function dayFractionToLocalTime_(fraction) {
  * into a time-of-day serial), a bare day-fraction Number, or an
  * already-correct string all resolve the same way. Empty/missing stays ""
  * so a required-field validator still reports it as missing, not a bad time.
+ *
+ * IMPORTANT — the Date branch reads UTC accessors (getUTCHours/
+ * getUTCMinutes), never Utilities.formatDate()/a named timezone. A
+ * production run against a real spreadsheet proved that wrong: Google
+ * Sheets' date/time serials are anchored at a historical epoch (~Dec 30,
+ * 1899), and re-projecting that instant through a named IANA timezone
+ * (even the business's own) picks up that timezone's pre-standardization
+ * historical UTC offset (often a non-round value, e.g. minutes, not whole
+ * hours) — which has nothing to do with the business's actual, current
+ * offset. A requested "09:00" round-tripped through
+ * Utilities.formatDate(date, "America/La_Paz", "HH:mm") came back as
+ * "04:27". The serial's UTC-labeled instant already *is* the intended
+ * calendar/time-of-day value — Sheets' serial-to-Date conversion is pure
+ * day/time arithmetic with no timezone concept involved at all — so
+ * reading it back via getUTC*() is the correct, timezone-agnostic inverse
+ * of however Sheets constructed it, regardless of the business timezone,
+ * the script's timezone, or the spreadsheet file's own display timezone
+ * setting (none of which matter here).
  */
 function normalizeLocalTimeCellValue_(raw) {
   if (raw === null || raw === undefined || raw === "") return "";
-  if (raw instanceof Date) return formatUtcToLocalTime_(raw, getBusinessTimezone_());
+  if (raw instanceof Date) {
+    var hh = raw.getUTCHours();
+    var mm = raw.getUTCMinutes();
+    return (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
+  }
   if (typeof raw === "number") return dayFractionToLocalTime_(raw);
   var str = String(raw).trim();
   return isValidLocalTime_(str) ? str : str.substring(0, 5);
 }
 
-/** Same idea for local-date columns — Sheets may hand back a Date instead of "yyyy-MM-dd". */
+/**
+ * Same idea for local-date columns — Sheets may hand back a Date instead
+ * of "yyyy-MM-dd". Same fix, same reasoning as normalizeLocalTimeCellValue_
+ * above: read UTC accessors (getUTCFullYear/getUTCMonth/getUTCDate)
+ * directly, never Utilities.formatDate()/a named timezone — the previous,
+ * timezone-reprojecting version shifted a requested "2026-07-27" back to
+ * "2026-07-26" against a real spreadsheet (midnight UTC of the 27th,
+ * reinterpreted in a UTC-negative business timezone, falls on the
+ * evening of the 26th).
+ */
 function normalizeLocalDateCellValue_(raw) {
   if (raw === null || raw === undefined || raw === "") return "";
-  if (raw instanceof Date) return formatUtcToLocalDate_(raw, getBusinessTimezone_());
+  if (raw instanceof Date) {
+    var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+    return raw.getUTCFullYear() + "-" + pad(raw.getUTCMonth() + 1) + "-" + pad(raw.getUTCDate());
+  }
   var str = String(raw).trim();
   return LOCAL_DATE_PATTERN.test(str) ? str : str.substring(0, 10);
 }
@@ -290,13 +324,43 @@ function sheetToObjects_(sheet) {
   return rows;
 }
 
+/**
+ * Writes one full row via Range#setValues() (never Sheet#appendRow()) — a
+ * real Google Sheet was observed still auto-detecting and coercing a
+ * literal "08:00"/phone-shaped string into a Date/Number on a column
+ * that was already Plain-Text-formatted by applyTextColumnFormats_'s
+ * one-time, whole-column pass (setupCRM()), when written via appendRow().
+ * Explicitly re-asserting Plain Text format on this row's own classified
+ * cells immediately before the value write closes that gap regardless of
+ * whether the sheet-wide one-time format actually covers this exact row,
+ * and regardless of whichever Sheets API method is used to append —
+ * never relying solely on a column format applied once, elsewhere, in the
+ * past. Reads the row's current formats first and only overwrites the
+ * classified columns' entries, so an unrelated column's format (e.g. a
+ * human-applied currency format on `price`) is never touched.
+ */
+function writeRowRobustly_(sheet, headers, row, rowNumber) {
+  var sheetName = sheet.getName();
+  var range = sheet.getRange(rowNumber, 1, 1, headers.length);
+  var classifiedIndexes = [];
+  headers.forEach(function (h, i) {
+    if (shouldForceTextColumnFormat_(sheetName, h)) classifiedIndexes.push(i);
+  });
+  if (classifiedIndexes.length > 0) {
+    var currentFormats = range.getNumberFormats()[0];
+    classifiedIndexes.forEach(function (i) { currentFormats[i] = "@"; });
+    range.setNumberFormats([currentFormats]);
+  }
+  range.setValues([row]);
+}
+
 function appendRowFromObject_(sheet, headers, obj) {
   var row = headers.map(function (h) {
     var v = obj[h];
     if (v === undefined || v === null) return "";
     return normalizeSheetCellValue_(h, v);
   });
-  sheet.appendRow(row);
+  writeRowRobustly_(sheet, headers, row, sheet.getLastRow() + 1);
 }
 
 function updateRowFromObject_(sheet, headers, obj, rowNumber) {
@@ -305,5 +369,5 @@ function updateRowFromObject_(sheet, headers, obj, rowNumber) {
     if (v === undefined || v === null) return "";
     return normalizeSheetCellValue_(h, v);
   });
-  sheet.getRange(rowNumber, 1, 1, headers.length).setValues([row]);
+  writeRowRobustly_(sheet, headers, row, rowNumber);
 }

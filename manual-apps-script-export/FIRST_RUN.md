@@ -52,14 +52,24 @@ set by hand.
 
 ## 8. Run the internal tests — as five batches, not `runAllInternalTests()`
 
-**Do not run `runAllInternalTests()` against this real deployment.** It runs all ~29 internal
+**Do not run `runAllInternalTests()` against this real deployment.** It runs all ~32 internal
 tests in one execution, which is slow enough against real Google Sheets (not the fast in-memory
 mock this project's automated test suite uses) that it exceeds Apps Script's own ~6-minute
 execution limit and fails with "Exceeded maximum execution time" before ever printing a summary.
 That function still exists in `Tests.gs`, but only for this project's local Node test harness
 (`npm run test:apps-script`), which has no such time limit.
 
-Instead, run these five functions from the same dropdown, **in this order**, waiting for each to
+**If you've ever run `runAllInternalTests()` against this deployment before (or a batch was ever
+killed by a timeout mid-test), run `resetInternalTestEnvironment()` first.** A timeout can kill an
+execution before a test's own `finally` cleanup runs, which can leave temporary test rows behind
+or (in older versions of this test suite) a leftover Calendar test configuration. This function is
+always safe to run — it only removes rows matching this test suite's own well-known test markers
+and only resets Calendar Script Properties if they currently hold one of this suite's own test
+sentinel values, never a real business Calendar id — and does nothing if there's nothing to clean
+up. Check the execution log afterward for a `{removedTestRows, removedTestServices,
+resetCalendarProperties}` summary.
+
+Then run these five functions from the same dropdown, **in this order**, waiting for each to
 finish before starting the next:
 
 1. `runInternalTestsCore()`
@@ -74,17 +84,25 @@ duration) for every test in that batch, then one `[BATCH ...]` line with that ba
 `{total, passed, failed}`. All five batches together cover every internal test — nothing is
 skipped by splitting them up.
 
-Once all five have run, call `showInternalTestSummary()` (or use the "Esquece CRM" spreadsheet
-menu's "Pruebas internas: ver resumen" item) for the combined result across all five batches: it
-alerts and logs `{total, passed, failed, skipped}` — `skipped` means a batch hasn't been run yet
-(or was cleared), not a hidden failure. If you ever want to start over cleanly (e.g. before a
-final pre-deployment check), call `clearInternalTestSummary()` first, then re-run the five batches
-in order again — it never keeps a stale result from a previous run mixed in with a fresh one.
+Once all five have run, call **`logInternalTestSummary()`** (not `showInternalTestSummary()`) for
+the combined result across all five batches: it logs and returns `{total, passed, failed,
+skipped}` — `skipped` means a batch hasn't been run yet (or was cleared), not a hidden failure.
+`showInternalTestSummary()` also exists, but only for the "Esquece CRM" spreadsheet menu's
+"Pruebas internas: ver resumen" item — it shows a UI alert dialog, which only has somewhere to
+appear when triggered from the spreadsheet's own menu. Calling it from the Apps Script editor's
+Run button instead has no dialog to show it in and can sit waiting until the execution times out
+— use `logInternalTestSummary()` from the editor every time. If you ever want to start over
+cleanly (e.g. before a final pre-deployment check), call `clearInternalTestSummary()` first, then
+re-run the five batches in order again — it never keeps a stale result from a previous run mixed
+in with a fresh one.
 
 Every test creates and cleans up its own temporary rows in a `finally` block, even if it fails —
-they never leave anything behind or touch real data. If anything fails, do not proceed to
-deployment — fix the underlying issue first (see this repository's `apps-script/README.md` and
-`TESTING.md`).
+they never leave anything behind or touch real data, and none of them write real, persistent
+Script Properties for Calendar configuration (Calendar-related tests use an in-memory-only
+override that's automatically gone the moment the execution ends, timeout or not — see
+`Calendar.gs`'s `CALENDAR_SYNC_ENABLED_OVERRIDE_FOR_TESTS_`/`CALENDAR_ID_OVERRIDE_FOR_TESTS_`). If
+anything fails, do not proceed to deployment — fix the underlying issue first (see this
+repository's `apps-script/README.md` and `TESTING.md`).
 
 ## 9. Deploy as Web App
 
