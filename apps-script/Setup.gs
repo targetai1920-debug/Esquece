@@ -47,18 +47,52 @@ var DEFAULT_SETTINGS_ROWS_ = [
  * sheets/headers, never deletes or overwrites existing SETTINGS rows or
  * any other data.
  */
+/**
+ * Column-format application (Sheets.gs's applyTextColumnFormats_) is a real
+ * Google Sheets API cost — one Range#setNumberFormat call per classified
+ * column, each spanning up to ~1000 rows. setupCRM() is idempotent and
+ * called often (several internal tests call it before seeding demo data),
+ * so redoing this on every single call was enough real-Sheets latency,
+ * multiplied across many calls in one execution, to push
+ * runAllInternalTests() past Apps Script's 6-minute execution limit. This
+ * version marker makes it a true one-time cost: the very first call (a
+ * brand-new sheet, or an existing production sheet that predates this
+ * feature) still fixes every column exactly once; every call after that
+ * skips the expensive part entirely — never touches a value either way, so
+ * this is purely a performance change, not a data change. Bump
+ * COLUMN_FORMAT_VERSION_ if the column classification itself ever changes
+ * and existing sheets need it reapplied.
+ */
+var COLUMN_FORMAT_VERSION_ = "1";
+var COLUMN_FORMAT_VERSION_PROPERTY_ = "CRM_COLUMN_FORMAT_VERSION_APPLIED";
+
+function columnFormatsAreUpToDate_() {
+  return getScriptProperty_(COLUMN_FORMAT_VERSION_PROPERTY_) === COLUMN_FORMAT_VERSION_;
+}
+
+function markColumnFormatsUpToDate_() {
+  PropertiesService.getScriptProperties().setProperty(COLUMN_FORMAT_VERSION_PROPERTY_, COLUMN_FORMAT_VERSION_);
+}
+
 function setupCRM() {
   var spreadsheet = getSpreadsheet_();
+  var sheetsByName = {};
 
   CRM_DATA_SHEET_NAMES.forEach(function (name) {
-    var sheet = getOrCreateSheet_(spreadsheet, name);
+    sheetsByName[name] = getOrCreateSheet_(spreadsheet, name);
+  });
+
+  if (!columnFormatsAreUpToDate_()) {
     // Plain-text format on every date/time/identifier column so a future
     // write of "08:00"/a numeric-looking phone into that column doesn't get
     // auto-detected by Sheets as a Date/Number on the next read. Format-only
-    // (never touches a value), safe to re-run against the real, already-
-    // populated production sheet every time setupCRM() runs.
-    applyTextColumnFormats_(sheet, name, SHEET_HEADERS[name]);
-  });
+    // (never touches a value), safe to run against the real, already-
+    // populated production sheet — but only actually needs to happen once.
+    CRM_DATA_SHEET_NAMES.forEach(function (name) {
+      applyTextColumnFormats_(sheetsByName[name], name, SHEET_HEADERS[name]);
+    });
+    markColumnFormatsUpToDate_();
+  }
 
   seedDefaultSettings_(spreadsheet);
   rebuildDashboard_(spreadsheet);

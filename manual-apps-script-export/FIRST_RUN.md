@@ -50,13 +50,41 @@ sync later) — review and accept. This creates all the CRM's sheets/tabs with t
 It's safe to run more than once — it won't duplicate anything or overwrite a value you've already
 set by hand.
 
-## 8. Run `runAllInternalTests()`
+## 8. Run the internal tests — as five batches, not `runAllInternalTests()`
 
-Select `runAllInternalTests` from the same dropdown and Run it. Check the execution log (View →
-Logs, or Ctrl+Enter) for the summary — it should report every internal test passing. These tests
-create and clean up their own temporary rows; they don't leave anything behind or touch real data.
-If anything fails, do not proceed to deployment — fix the underlying issue first (see this
-repository's `apps-script/README.md` and `TESTING.md`).
+**Do not run `runAllInternalTests()` against this real deployment.** It runs all ~29 internal
+tests in one execution, which is slow enough against real Google Sheets (not the fast in-memory
+mock this project's automated test suite uses) that it exceeds Apps Script's own ~6-minute
+execution limit and fails with "Exceeded maximum execution time" before ever printing a summary.
+That function still exists in `Tests.gs`, but only for this project's local Node test harness
+(`npm run test:apps-script`), which has no such time limit.
+
+Instead, run these five functions from the same dropdown, **in this order**, waiting for each to
+finish before starting the next:
+
+1. `runInternalTestsCore()`
+2. `runInternalTestsSheets()`
+3. `runInternalTestsBooking()`
+4. `runInternalTestsConversations()`
+5. `runInternalTestsIntegrations()`
+
+Each one finishes comfortably under the execution limit on its own. After each run, check the
+execution log (View → Logs, or Ctrl+Enter) — it prints a `[TEST START]`/`[TEST END]` line (with
+duration) for every test in that batch, then one `[BATCH ...]` line with that batch's own
+`{total, passed, failed}`. All five batches together cover every internal test — nothing is
+skipped by splitting them up.
+
+Once all five have run, call `showInternalTestSummary()` (or use the "Esquece CRM" spreadsheet
+menu's "Pruebas internas: ver resumen" item) for the combined result across all five batches: it
+alerts and logs `{total, passed, failed, skipped}` — `skipped` means a batch hasn't been run yet
+(or was cleared), not a hidden failure. If you ever want to start over cleanly (e.g. before a
+final pre-deployment check), call `clearInternalTestSummary()` first, then re-run the five batches
+in order again — it never keeps a stale result from a previous run mixed in with a fresh one.
+
+Every test creates and cleans up its own temporary rows in a `finally` block, even if it fails —
+they never leave anything behind or touch real data. If anything fails, do not proceed to
+deployment — fix the underlying issue first (see this repository's `apps-script/README.md` and
+`TESTING.md`).
 
 ## 9. Deploy as Web App
 

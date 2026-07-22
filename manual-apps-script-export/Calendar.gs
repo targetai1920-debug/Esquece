@@ -16,9 +16,26 @@ function calendarSyncEnabled_() {
   return isCalendarSyncEnabled_() && !!getGoogleCalendarId_();
 }
 
+/**
+ * Test-only seam: when set, syncing calls this instead of the real
+ * CalendarApp global. Always null in production — only Tests.gs's
+ * Calendar-adapter test sets it, and only for its own duration, resetting
+ * it to null in a `finally` even if the test fails, so no real booking can
+ * ever be silently routed to a fake calendar. This exists specifically so
+ * internal tests can exercise real create/update/cancel sync logic without
+ * calling real CalendarApp with a made-up calendar id (which works against
+ * the Node harness's mock but throws "Google Calendar not found or not
+ * accessible" against a real Apps Script deployment).
+ */
+var CALENDAR_APP_FOR_TESTS_ = null;
+
+function getCalendarAppProvider_() {
+  return CALENDAR_APP_FOR_TESTS_ || CalendarApp;
+}
+
 function getSyncCalendar_() {
   var calendarId = getGoogleCalendarId_();
-  var calendar = CalendarApp.getCalendarById(calendarId);
+  var calendar = getCalendarAppProvider_().getCalendarById(calendarId);
   if (!calendar) {
     throw new Error("Google Calendar not found or not accessible: " + calendarId);
   }

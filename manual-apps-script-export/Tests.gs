@@ -1,11 +1,22 @@
 /**
- * Safe internal test runner. Only exercises pure logic and
- * non-destructive structural checks against the real bound spreadsheet —
- * never deletes sheets/rows here (see "Do not run destructive tests
- * against production sheets"). Domain/booking-rule tests (breaks, time
- * off, overlap, idempotent booking, etc.) are added in Phase D alongside
- * the code they test; this file currently covers Phase B scope only
- * (setup, security, health).
+ * Internal test runner. Only exercises pure logic and non-destructive
+ * structural checks against the real bound spreadsheet — every test cleans
+ * up its own rows in a `finally` block, regardless of pass/fail, and none
+ * of them delete a sheet or touch a row a test didn't create itself.
+ *
+ * Split into five batches (INTERNAL_TESTS_CORE_/SHEETS_/BOOKING_/
+ * CONVERSATIONS_/INTEGRATIONS_) run via runInternalTestsCore() etc. —
+ * against a real Apps Script deployment, running all ~29 tests in one
+ * execution (runAllInternalTests()) was slow enough against real Google
+ * Sheets latency to exceed Apps Script's ~6-minute execution limit before
+ * ever printing a summary. Each batch function is small enough to finish
+ * well under that limit on its own; getInternalTestSummary()/
+ * showInternalTestSummary() combine results across separate batch runs
+ * (persisted in Script Properties) into one total/passed/failed/skipped
+ * report. runAllInternalTests() still runs everything in one call — kept
+ * for the local Node vm harness (npm run test:apps-script), which has no
+ * execution-time limit and no real Sheets API latency. See FIRST_RUN.md
+ * for the exact real-deployment workflow.
  */
 
 function assertEqual_(actual, expected, label) {
@@ -45,7 +56,50 @@ function buildTestEnvelope_(action, payload, overrides) {
   return envelope;
 }
 
-var INTERNAL_TESTS_ = [
+/**
+ * A self-contained in-memory fake calendar provider — never a real Google
+ * Calendar, never registered with real CalendarApp. Only Calendar.gs's own
+ * getSyncCalendar_() is redirected to it (via CALENDAR_APP_FOR_TESTS_), so
+ * syncCreateCalendarEvent_/syncUpdateCalendarEvent_/syncCancelCalendarEvent_
+ * run their real, unmodified production logic against it — this exercises
+ * the actual sync code paths without depending on a real Google Calendar
+ * being reachable from wherever these tests run.
+ */
+function makeFakeCalendarAppForTests_() {
+  var events = {};
+  var nextEventId = 1;
+  function makeEvent(id) {
+    var event = {
+      _deleted: false,
+      getId: function () { return id; },
+      setTime: function () {}, // the test only asserts calendarEventId/calendarSyncStatus, not the stored time
+      deleteEvent: function () { event._deleted = true; },
+    };
+    return event;
+  }
+  var fakeCalendar = {
+    createEvent: function () {
+      var id = "fake-test-event-" + (nextEventId++);
+      var event = makeEvent(id);
+      events[id] = event;
+      return event;
+    },
+    getEventById: function (id) {
+      var event = events[id];
+      return event && !event._deleted ? event : null;
+    },
+  };
+  return {
+    getCalendarById: function () {
+      return fakeCalendar; // any id resolves to this one in-memory fake — never a real calendar
+    },
+  };
+}
+
+// =====================================================================
+// Batch: Core — security/envelope/setup. Fast, no demo data, no Calendar.
+// =====================================================================
+var INTERNAL_TESTS_CORE_ = [
   {
     name: "stableStringify sorts object keys",
     run: function () {
@@ -152,6 +206,13 @@ var INTERNAL_TESTS_ = [
       }
     },
   },
+];
+
+// =====================================================================
+// Batch: Sheets — the Sheets.gs type-normalization boundary (real Google
+// Sheets Date/Number auto-coercion, not just the mock harness's behavior).
+// =====================================================================
+var INTERNAL_TESTS_SHEETS_ = [
   {
     name: "domain reads work against seeded demo data, then clean up after themselves",
     run: function () {
@@ -173,10 +234,83 @@ var INTERNAL_TESTS_ = [
     },
   },
   {
+    name: "sheetToObjects_ normalizes a phone number Sheets already converted to a Number",
+    run: function () {
+      var testPhone = "59100000011";
+      try {
+        var created = actionUpsertCustomer_({ phoneE164: testPhone, name: "Prueba Tipo Numero" }).customer;
+        var sheet = getCustomersSheet_();
+        var headers = SHEET_HEADERS[SHEET_NAMES.CUSTOMERS];
+        var phoneCol = headers.indexOf("phoneE164") + 1;
+        var rowRef = findRowById_(sheet, "customerId", created.customerId);
+        // Simulate what real Google Sheets does to a purely-numeric string
+        // written with no "+" prefix: store it as a Number, not text.
+        sheet.getRange(rowRef.__row, phoneCol, 1, 1).setValues([[Number(testPhone)]]);
+
+        var reread = findCustomerByPhoneRaw_(testPhone);
+        if (!reread || reread.customerId !== created.customerId) {
+          throw new Error("expected findCustomerByPhoneRaw_ to still find the customer after phoneE164 became a Number in the sheet");
+        }
+        if (typeof reread.phoneE164 !== "string" || reread.phoneE164 !== testPhone) {
+          throw new Error("expected phoneE164 normalized back to the string \"" + testPhone + "\", got " + JSON.stringify(reread.phoneE164));
+        }
+      } finally {
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+      }
+    },
+  },
+  {
+    name: "upsertCustomer still dedupes when the stored phone was previously coerced to a Number",
+    run: function () {
+      var testPhone = "59100000012";
+      try {
+        var created = actionUpsertCustomer_({ phoneE164: testPhone, name: "Prueba Numero Dedupe" }).customer;
+        var sheet = getCustomersSheet_();
+        var headers = SHEET_HEADERS[SHEET_NAMES.CUSTOMERS];
+        var phoneCol = headers.indexOf("phoneE164") + 1;
+        var rowRef = findRowById_(sheet, "customerId", created.customerId);
+        sheet.getRange(rowRef.__row, phoneCol, 1, 1).setValues([[Number(testPhone)]]);
+
+        var updated = actionUpsertCustomer_({ phoneE164: testPhone, email: "numero@example.com" }).customer;
+        if (updated.customerId !== created.customerId) {
+          throw new Error("second upsert created a new customer instead of updating the one whose phone was stored as a Number");
+        }
+        if (updated.name !== "Prueba Numero Dedupe") {
+          throw new Error("second upsert erased the name field instead of preserving it");
+        }
+      } finally {
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+      }
+    },
+  },
+  {
+    name: "normalizeLocalTimeCellValue_ resolves a Date-typed cell (Sheets auto-parsing \"08:00\") back to \"08:00\"",
+    run: function () {
+      var timezone = getBusinessTimezone_();
+      var asDate = parseLocalDateTimeToUtc_("2030-06-15", "08:00", timezone);
+      assertEqual_(normalizeLocalTimeCellValue_(asDate), "08:00", "Date-typed time cell");
+    },
+  },
+  {
+    name: "normalizeLocalTimeCellValue_ resolves a bare day-fraction Number back to \"HH:mm\"",
+    run: function () {
+      assertEqual_(normalizeLocalTimeCellValue_(8 / 24), "08:00", "day-fraction 8/24");
+      assertEqual_(normalizeLocalTimeCellValue_(0), "00:00", "day-fraction 0");
+      assertEqual_(normalizeLocalTimeCellValue_(23.5 / 24), "23:30", "day-fraction 23.5/24");
+    },
+  },
+];
+
+// =====================================================================
+// Batch: Booking — appointment creation/cancellation/reschedule/
+// idempotency. The heaviest tests (each seeds/removes demo data and
+// creates real appointment rows), so this is its own batch.
+// =====================================================================
+var INTERNAL_TESTS_BOOKING_ = [
+  {
     name: "upsertCustomer dedupes by phone and never erases fields with a blank",
     run: function () {
       var testPhone = "59100000000"; // clearly-fake test number, not a real contact
-      var testSheet = getCustomersSheet_();
       var before = findCustomerByPhoneRaw_(testPhone);
       if (before) {
         // Clean slate if a previous failed run left this behind.
@@ -289,87 +423,6 @@ var INTERNAL_TESTS_ = [
     },
   },
   {
-    name: "conversation version conflict is detected, and webhook events are deduplicated",
-    run: function () {
-      var testPhone = "59100000005";
-      var conversation = actionGetOrCreateConversation_({ phoneE164: testPhone });
-      try {
-        actionApplyConversationTurn_({ conversationId: conversation.conversationId, expectedVersion: conversation.version, newState: "SELECTING_SERVICE" });
-        assertThrowsCode_(function () {
-          actionApplyConversationTurn_({ conversationId: conversation.conversationId, expectedVersion: conversation.version, newState: "SELECTING_BARBER" });
-        }, ERROR_CODES.CONVERSATION_CONFLICT, "stale expectedVersion");
-
-        var eventId = "test-dedup-event-" + testPhone;
-        var first = actionRegisterWebhookEvent_({ externalEventId: eventId, eventType: "message" });
-        var second = actionRegisterWebhookEvent_({ externalEventId: eventId, eventType: "message" });
-        if (first.isDuplicate !== false || second.isDuplicate !== true) {
-          throw new Error("expected first registration to be new and second to be flagged duplicate");
-        }
-      } finally {
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CONVERSATIONS, function (row) { return row.phoneE164 === testPhone; });
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CONVERSATION_MESSAGES, function (row) { return row.phoneE164 === testPhone; });
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.WEBHOOK_EVENTS, function (row) { return row.externalEventId === "test-dedup-event-" + testPhone; });
-      }
-    },
-  },
-  {
-    name: "admin can create and deactivate a service, and inactive services are hidden from the public list",
-    run: function () {
-      var created = actionAdminCreateService_({ name: "Prueba interna — servicio admin", price: 1, durationMinutes: 15 });
-      try {
-        var publicListBefore = actionListServices_().services;
-        if (!publicListBefore.some(function (s) { return s.serviceId === created.service.serviceId; })) {
-          throw new Error("newly-created active service should appear in the public list");
-        }
-        actionAdminUpdateService_({ serviceId: created.service.serviceId, active: false });
-        var publicListAfter = actionListServices_().services;
-        if (publicListAfter.some(function (s) { return s.serviceId === created.service.serviceId; })) {
-          throw new Error("deactivated service should no longer appear in the public list");
-        }
-      } finally {
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.SERVICES, function (row) { return row.serviceId === created.service.serviceId; });
-      }
-    },
-  },
-  {
-    name: "admin dashboard listings surface notifications, conversations and message history",
-    run: function () {
-      var testPhone = "59100000006";
-      var conversation = actionGetOrCreateConversation_({ phoneE164: testPhone });
-      var notification = createNotificationRow_({ type: "CONFIRMATION", customerId: null });
-      try {
-        actionApplyConversationTurn_({
-          conversationId: conversation.conversationId,
-          expectedVersion: conversation.version,
-          inboundMessage: { messageType: "text", body: "Hola" },
-        });
-
-        var messages = actionAdminGetConversationMessages_({ conversationId: conversation.conversationId }).messages;
-        if (messages.length !== 1 || messages[0].body !== "Hola" || messages[0].direction !== "INBOUND") {
-          throw new Error("expected one inbound message with the sent body");
-        }
-
-        var conversations = actionAdminListConversations_({}).conversations;
-        if (!conversations.some(function (c) { return c.conversationId === conversation.conversationId; })) {
-          throw new Error("adminListConversations should include the test conversation");
-        }
-
-        var pendingNotifications = actionAdminListNotifications_({ status: "PENDING" }).notifications;
-        if (!pendingNotifications.some(function (n) { return n.notificationId === notification.notificationId; })) {
-          throw new Error("adminListNotifications({status: PENDING}) should include the test notification");
-        }
-        var sentNotifications = actionAdminListNotifications_({ status: "SENT" }).notifications;
-        if (sentNotifications.some(function (n) { return n.notificationId === notification.notificationId; })) {
-          throw new Error("adminListNotifications({status: SENT}) should not include a PENDING notification");
-        }
-      } finally {
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CONVERSATIONS, function (row) { return row.phoneE164 === testPhone; });
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CONVERSATION_MESSAGES, function (row) { return row.phoneE164 === testPhone; });
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.notificationId === notification.notificationId; });
-      }
-    },
-  },
-  {
     name: "booking with reminders enabled schedules a REMINDER notification, which cancellation then cancels",
     run: function () {
       var settingsSheet = getOrCreateSheet_(getSpreadsheet_(), SHEET_NAMES.SETTINGS);
@@ -419,162 +472,6 @@ var INTERNAL_TESTS_ = [
     },
   },
   {
-    name: "Calendar sync: create/reschedule/cancel mirror the appointment lifecycle when enabled, and stay disabled by default",
-    run: function () {
-      seedDemoData();
-      var testPhone = "59100000009";
-      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
-      var newDate = nextWeekdayLocalDate_(testDate, 1);
-      var created;
-      try {
-        // Disabled by default — booking must succeed with no calendar side effect at all.
-        created = actionCreateAppointment_({
-          idempotencyKey: "test-calendar-disabled-" + testPhone,
-          source: "WHATSAPP", serviceId: "demo-service-1", anyBarber: true,
-          localDate: testDate, localStartTime: "09:00",
-          customer: { name: "Prueba Calendario", phoneE164: testPhone },
-        }).appointment;
-        if (created.calendarEventId) {
-          throw new Error("expected no calendar event when ENABLE_CALENDAR_SYNC is off");
-        }
-        actionCancelAppointment_({ appointmentId: created.appointmentId, actor: { type: "system" } });
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === created.appointmentId; });
-        created = null;
-
-        PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "true");
-        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "test-calendar-for-esquece");
-
-        created = actionCreateAppointment_({
-          idempotencyKey: "test-calendar-enabled-" + testPhone,
-          source: "WHATSAPP", serviceId: "demo-service-1", anyBarber: true,
-          localDate: testDate, localStartTime: "10:00",
-          customer: { name: "Prueba Calendario", phoneE164: testPhone },
-        }).appointment;
-        if (!created.calendarEventId || created.calendarSyncStatus !== "SYNCED") {
-          throw new Error("expected a synced calendar event once ENABLE_CALENDAR_SYNC is on");
-        }
-
-        var rescheduled = actionRescheduleAppointment_({
-          appointmentId: created.appointmentId, actor: { type: "system" },
-          newLocalDate: newDate, newLocalStartTime: "11:00",
-        }).appointment;
-        if (rescheduled.calendarEventId !== created.calendarEventId || rescheduled.calendarSyncStatus !== "SYNCED") {
-          throw new Error("expected the same calendar event to be updated (not recreated) on reschedule");
-        }
-
-        actionCancelAppointment_({ appointmentId: created.appointmentId, actor: { type: "system" } });
-        var afterCancel = getAppointmentById_(created.appointmentId);
-        if (afterCancel.calendarSyncStatus !== "CANCELLED") {
-          throw new Error("expected calendarSyncStatus CANCELLED after cancelling a synced appointment");
-        }
-
-        // A misconfigured/inaccessible calendar must fail non-destructively — the appointment itself still exists and is bookable.
-        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "invalid-calendar-id-for-test");
-        var failing = actionCreateAppointment_({
-          idempotencyKey: "test-calendar-failure-" + testPhone,
-          source: "WHATSAPP", serviceId: "demo-service-1", anyBarber: true,
-          localDate: testDate, localStartTime: "13:00",
-          customer: { name: "Prueba Calendario", phoneE164: testPhone },
-        }).appointment;
-        if (failing.status !== "CONFIRMED") {
-          throw new Error("a calendar sync failure must never prevent the booking itself from succeeding");
-        }
-        var failureNotifications = findRowsWhere_(getNotificationsSheet_(), function (row) {
-          return row.appointmentId === failing.appointmentId && row.type === "CALENDAR_SYNC_FAILURE";
-        });
-        if (failureNotifications.length !== 1) {
-          throw new Error("expected a CALENDAR_SYNC_FAILURE notification to be queued when Calendar sync fails");
-        }
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === failing.appointmentId; });
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.appointmentId === failing.appointmentId; });
-      } finally {
-        PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "false");
-        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "");
-        if (created) {
-          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === created.appointmentId; });
-          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.appointmentId === created.appointmentId; });
-        }
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
-        removeDemoData();
-      }
-    },
-  },
-  // --- Sheets type-coercion boundary (Sheets.gs) --------------------------
-  // Real Google Sheets auto-detects a cell's type from what's written to
-  // it: a phone number with no "+" (this CRM always strips it) can come
-  // back as a Number, and a literal "08:00"/"16:00" can come back as a
-  // Date or a bare day-fraction Number instead of a string. The tests
-  // above never exercised this because nothing writes a raw Date/Number
-  // into these columns on its own — these tests do that explicitly, to
-  // reproduce the exact conversions a real, already-existing spreadsheet
-  // can hand back, not just what this project's own write path produces.
-  {
-    name: "sheetToObjects_ normalizes a phone number Sheets already converted to a Number",
-    run: function () {
-      var testPhone = "59100000011";
-      try {
-        var created = actionUpsertCustomer_({ phoneE164: testPhone, name: "Prueba Tipo Numero" }).customer;
-        var sheet = getCustomersSheet_();
-        var headers = SHEET_HEADERS[SHEET_NAMES.CUSTOMERS];
-        var phoneCol = headers.indexOf("phoneE164") + 1;
-        var rowRef = findRowById_(sheet, "customerId", created.customerId);
-        // Simulate what real Google Sheets does to a purely-numeric string
-        // written with no "+" prefix: store it as a Number, not text.
-        sheet.getRange(rowRef.__row, phoneCol, 1, 1).setValues([[Number(testPhone)]]);
-
-        var reread = findCustomerByPhoneRaw_(testPhone);
-        if (!reread || reread.customerId !== created.customerId) {
-          throw new Error("expected findCustomerByPhoneRaw_ to still find the customer after phoneE164 became a Number in the sheet");
-        }
-        if (typeof reread.phoneE164 !== "string" || reread.phoneE164 !== testPhone) {
-          throw new Error("expected phoneE164 normalized back to the string \"" + testPhone + "\", got " + JSON.stringify(reread.phoneE164));
-        }
-      } finally {
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
-      }
-    },
-  },
-  {
-    name: "upsertCustomer still dedupes when the stored phone was previously coerced to a Number",
-    run: function () {
-      var testPhone = "59100000012";
-      try {
-        var created = actionUpsertCustomer_({ phoneE164: testPhone, name: "Prueba Numero Dedupe" }).customer;
-        var sheet = getCustomersSheet_();
-        var headers = SHEET_HEADERS[SHEET_NAMES.CUSTOMERS];
-        var phoneCol = headers.indexOf("phoneE164") + 1;
-        var rowRef = findRowById_(sheet, "customerId", created.customerId);
-        sheet.getRange(rowRef.__row, phoneCol, 1, 1).setValues([[Number(testPhone)]]);
-
-        var updated = actionUpsertCustomer_({ phoneE164: testPhone, email: "numero@example.com" }).customer;
-        if (updated.customerId !== created.customerId) {
-          throw new Error("second upsert created a new customer instead of updating the one whose phone was stored as a Number");
-        }
-        if (updated.name !== "Prueba Numero Dedupe") {
-          throw new Error("second upsert erased the name field instead of preserving it");
-        }
-      } finally {
-        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
-      }
-    },
-  },
-  {
-    name: "normalizeLocalTimeCellValue_ resolves a Date-typed cell (Sheets auto-parsing \"08:00\") back to \"08:00\"",
-    run: function () {
-      var timezone = getBusinessTimezone_();
-      var asDate = parseLocalDateTimeToUtc_("2030-06-15", "08:00", timezone);
-      assertEqual_(normalizeLocalTimeCellValue_(asDate), "08:00", "Date-typed time cell");
-    },
-  },
-  {
-    name: "normalizeLocalTimeCellValue_ resolves a bare day-fraction Number back to \"HH:mm\"",
-    run: function () {
-      assertEqual_(normalizeLocalTimeCellValue_(8 / 24), "08:00", "day-fraction 8/24");
-      assertEqual_(normalizeLocalTimeCellValue_(0), "00:00", "day-fraction 0");
-      assertEqual_(normalizeLocalTimeCellValue_(23.5 / 24), "23:30", "day-fraction 23.5/24");
-    },
-  },
-  {
     name: "creating an appointment succeeds even when WORKING_HOURS openingTime/closingTime were already stored as Date/Number, not strings",
     run: function () {
       setupCRM();
@@ -621,28 +518,409 @@ var INTERNAL_TESTS_ = [
   },
 ];
 
+// =====================================================================
+// Batch: Conversations — conversation state, webhook dedup, admin
+// conversation/notification views.
+// =====================================================================
+var INTERNAL_TESTS_CONVERSATIONS_ = [
+  {
+    name: "conversation version conflict is detected, and webhook events are deduplicated",
+    run: function () {
+      var testPhone = "59100000005";
+      var conversation = actionGetOrCreateConversation_({ phoneE164: testPhone });
+      try {
+        actionApplyConversationTurn_({ conversationId: conversation.conversationId, expectedVersion: conversation.version, newState: "SELECTING_SERVICE" });
+        assertThrowsCode_(function () {
+          actionApplyConversationTurn_({ conversationId: conversation.conversationId, expectedVersion: conversation.version, newState: "SELECTING_BARBER" });
+        }, ERROR_CODES.CONVERSATION_CONFLICT, "stale expectedVersion");
+
+        var eventId = "test-dedup-event-" + testPhone;
+        var first = actionRegisterWebhookEvent_({ externalEventId: eventId, eventType: "message" });
+        var second = actionRegisterWebhookEvent_({ externalEventId: eventId, eventType: "message" });
+        if (first.isDuplicate !== false || second.isDuplicate !== true) {
+          throw new Error("expected first registration to be new and second to be flagged duplicate");
+        }
+      } finally {
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CONVERSATIONS, function (row) { return row.phoneE164 === testPhone; });
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CONVERSATION_MESSAGES, function (row) { return row.phoneE164 === testPhone; });
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.WEBHOOK_EVENTS, function (row) { return row.externalEventId === "test-dedup-event-" + testPhone; });
+      }
+    },
+  },
+  {
+    name: "admin dashboard listings surface notifications, conversations and message history",
+    run: function () {
+      var testPhone = "59100000006";
+      var conversation = actionGetOrCreateConversation_({ phoneE164: testPhone });
+      var notification = createNotificationRow_({ type: "CONFIRMATION", customerId: null });
+      try {
+        actionApplyConversationTurn_({
+          conversationId: conversation.conversationId,
+          expectedVersion: conversation.version,
+          inboundMessage: { messageType: "text", body: "Hola" },
+        });
+
+        var messages = actionAdminGetConversationMessages_({ conversationId: conversation.conversationId }).messages;
+        if (messages.length !== 1 || messages[0].body !== "Hola" || messages[0].direction !== "INBOUND") {
+          throw new Error("expected one inbound message with the sent body");
+        }
+
+        var conversations = actionAdminListConversations_({}).conversations;
+        if (!conversations.some(function (c) { return c.conversationId === conversation.conversationId; })) {
+          throw new Error("adminListConversations should include the test conversation");
+        }
+
+        var pendingNotifications = actionAdminListNotifications_({ status: "PENDING" }).notifications;
+        if (!pendingNotifications.some(function (n) { return n.notificationId === notification.notificationId; })) {
+          throw new Error("adminListNotifications({status: PENDING}) should include the test notification");
+        }
+        var sentNotifications = actionAdminListNotifications_({ status: "SENT" }).notifications;
+        if (sentNotifications.some(function (n) { return n.notificationId === notification.notificationId; })) {
+          throw new Error("adminListNotifications({status: SENT}) should not include a PENDING notification");
+        }
+      } finally {
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CONVERSATIONS, function (row) { return row.phoneE164 === testPhone; });
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CONVERSATION_MESSAGES, function (row) { return row.phoneE164 === testPhone; });
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.notificationId === notification.notificationId; });
+      }
+    },
+  },
+];
+
+// =====================================================================
+// Batch: Integrations — admin service CRUD + Google Calendar sync.
+// The Calendar tests never touch a real Google Calendar: the "success"
+// path uses an in-memory fake adapter (makeFakeCalendarAppForTests_,
+// installed via Calendar.gs's CALENDAR_APP_FOR_TESTS_ seam), and the
+// "invalid id" path deliberately uses a calendar id that cannot resolve
+// to a real calendar, to prove the non-destructive-failure behavior
+// against the real CalendarApp without ever creating one.
+// =====================================================================
+var INTERNAL_TESTS_INTEGRATIONS_ = [
+  {
+    name: "admin can create and deactivate a service, and inactive services are hidden from the public list",
+    run: function () {
+      var created = actionAdminCreateService_({ name: "Prueba interna — servicio admin", price: 1, durationMinutes: 15 });
+      try {
+        var publicListBefore = actionListServices_().services;
+        if (!publicListBefore.some(function (s) { return s.serviceId === created.service.serviceId; })) {
+          throw new Error("newly-created active service should appear in the public list");
+        }
+        actionAdminUpdateService_({ serviceId: created.service.serviceId, active: false });
+        var publicListAfter = actionListServices_().services;
+        if (publicListAfter.some(function (s) { return s.serviceId === created.service.serviceId; })) {
+          throw new Error("deactivated service should no longer appear in the public list");
+        }
+      } finally {
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.SERVICES, function (row) { return row.serviceId === created.service.serviceId; });
+      }
+    },
+  },
+  {
+    name: "Calendar sync stays disabled by default and creates no calendar event",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testPhone = "59100000009";
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var created;
+      try {
+        created = actionCreateAppointment_({
+          idempotencyKey: "test-calendar-disabled-" + testPhone,
+          source: "WHATSAPP", serviceId: "demo-service-1", anyBarber: true,
+          localDate: testDate, localStartTime: "09:00",
+          customer: { name: "Prueba Calendario Deshabilitado", phoneE164: testPhone },
+        }).appointment;
+        if (created.calendarEventId) {
+          throw new Error("expected no calendar event when ENABLE_CALENDAR_SYNC is off");
+        }
+      } finally {
+        if (created) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === created.appointmentId; });
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.appointmentId === created.appointmentId; });
+        }
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "Calendar sync: create/reschedule/cancel succeed via a simulated calendar adapter (never touches real CalendarApp)",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testPhone = "59100000010";
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var newDate = nextWeekdayLocalDate_(testDate, 1);
+      var created;
+      try {
+        CALENDAR_APP_FOR_TESTS_ = makeFakeCalendarAppForTests_();
+        PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "true");
+        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "fake-calendar-for-tests");
+
+        created = actionCreateAppointment_({
+          idempotencyKey: "test-calendar-adapter-" + testPhone,
+          source: "WHATSAPP", serviceId: "demo-service-1", anyBarber: true,
+          localDate: testDate, localStartTime: "10:00",
+          customer: { name: "Prueba Calendario Adaptador", phoneE164: testPhone },
+        }).appointment;
+        if (!created.calendarEventId || created.calendarSyncStatus !== "SYNCED") {
+          throw new Error("expected a synced calendar event via the fake adapter, got " + JSON.stringify(created));
+        }
+
+        var rescheduled = actionRescheduleAppointment_({
+          appointmentId: created.appointmentId, actor: { type: "system" },
+          newLocalDate: newDate, newLocalStartTime: "11:00",
+        }).appointment;
+        if (rescheduled.calendarEventId !== created.calendarEventId || rescheduled.calendarSyncStatus !== "SYNCED") {
+          throw new Error("expected the same fake calendar event to be updated (not recreated) on reschedule");
+        }
+
+        actionCancelAppointment_({ appointmentId: created.appointmentId, actor: { type: "system" } });
+        var afterCancel = getAppointmentById_(created.appointmentId);
+        if (afterCancel.calendarSyncStatus !== "CANCELLED") {
+          throw new Error("expected calendarSyncStatus CANCELLED after cancelling a synced appointment");
+        }
+      } finally {
+        // Never leave the fake installed — a real booking must always reach real CalendarApp.
+        CALENDAR_APP_FOR_TESTS_ = null;
+        PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "false");
+        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "");
+        if (created) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === created.appointmentId; });
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.appointmentId === created.appointmentId; });
+        }
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "Calendar sync failure with an inaccessible real Calendar ID is recorded non-destructively",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testPhone = "59100000014";
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var failing;
+      try {
+        PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "true");
+        // Deliberately real CalendarApp here (CALENDAR_APP_FOR_TESTS_ is not
+        // set) — this id can never resolve to a real, accessible calendar,
+        // so this proves the non-destructive-failure path against the
+        // genuine CalendarApp.getCalendarById() behavior without ever
+        // creating a real calendar.
+        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "invalid-calendar-id-for-test");
+
+        failing = actionCreateAppointment_({
+          idempotencyKey: "test-calendar-failure-" + testPhone,
+          source: "WHATSAPP", serviceId: "demo-service-1", anyBarber: true,
+          localDate: testDate, localStartTime: "13:00",
+          customer: { name: "Prueba Calendario Falla", phoneE164: testPhone },
+        }).appointment;
+        if (failing.status !== "CONFIRMED") {
+          throw new Error("a calendar sync failure must never prevent the booking itself from succeeding");
+        }
+        if (failing.calendarSyncStatus !== "FAILED") {
+          throw new Error("expected calendarSyncStatus FAILED when the configured Calendar id doesn't resolve to a real calendar");
+        }
+        var failureNotifications = findRowsWhere_(getNotificationsSheet_(), function (row) {
+          return row.appointmentId === failing.appointmentId && row.type === "CALENDAR_SYNC_FAILURE";
+        });
+        if (failureNotifications.length !== 1) {
+          throw new Error("expected a CALENDAR_SYNC_FAILURE notification to be queued when Calendar sync fails");
+        }
+      } finally {
+        PropertiesService.getScriptProperties().setProperty("ENABLE_CALENDAR_SYNC", "false");
+        PropertiesService.getScriptProperties().setProperty("GOOGLE_CALENDAR_ID", "");
+        if (failing) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === failing.appointmentId; });
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.NOTIFICATIONS, function (row) { return row.appointmentId === failing.appointmentId; });
+        }
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+        removeDemoData();
+      }
+    },
+  },
+];
+
+/** Canonical roster of every internal test across all batches. */
+var INTERNAL_TESTS_ALL_ = [].concat(
+  INTERNAL_TESTS_CORE_,
+  INTERNAL_TESTS_SHEETS_,
+  INTERNAL_TESTS_BOOKING_,
+  INTERNAL_TESTS_CONVERSATIONS_,
+  INTERNAL_TESTS_INTEGRATIONS_,
+);
+
 /**
- * Runs every registered test, catching failures individually so one
- * failing test doesn't abort the rest. Returns and logs a summary.
+ * Runs one list of tests, logging a start/end line (with duration) around
+ * each so a slow test is identifiable from the execution log alone, not
+ * just from the final summary. Each test's own try/finally already
+ * guarantees its cleanup runs even on failure — this only adds
+ * timing/logging and catches the failure so one bad test doesn't stop
+ * the rest of the batch.
  */
-function runAllInternalTests() {
-  var results = INTERNAL_TESTS_.map(function (test) {
+function runInternalTestList_(tests) {
+  return tests.map(function (test) {
+    var startedAt = Date.now();
+    Logger.log("[TEST START] " + test.name);
     try {
       test.run();
-      return { name: test.name, passed: true };
+      var durationMs = Date.now() - startedAt;
+      Logger.log("[TEST END] " + test.name + " — PASSED (" + durationMs + "ms)");
+      return { name: test.name, passed: true, durationMs: durationMs };
     } catch (err) {
-      return { name: test.name, passed: false, message: err && err.message ? err.message : String(err) };
+      var failedDurationMs = Date.now() - startedAt;
+      var message = err && err.message ? err.message : String(err);
+      Logger.log("[TEST END] " + test.name + " — FAILED (" + failedDurationMs + "ms): " + message);
+      return { name: test.name, passed: false, durationMs: failedDurationMs, message: message };
     }
   });
+}
 
+function summarizeResults_(results) {
   var passed = results.filter(function (r) { return r.passed; }).length;
-  var summary = {
+  return {
     total: results.length,
     passed: passed,
     failed: results.length - passed,
     results: results,
   };
+}
 
+// ---------------------------------------------------------------------
+// Aggregated cross-batch summary, persisted in Script Properties so
+// getInternalTestSummary()/showInternalTestSummary() can report a
+// combined total/passed/failed/skipped across separate manual batch runs
+// (each is its own Apps Script execution) without re-running everything
+// in a single execution.
+// ---------------------------------------------------------------------
+
+var INTERNAL_TEST_RESULTS_PROPERTY_ = "INTERNAL_TEST_BATCH_RESULTS_JSON";
+
+function loadStoredTestResults_() {
+  var raw = getScriptProperty_(INTERNAL_TEST_RESULTS_PROPERTY_);
+  if (!raw) return {};
+  try {
+    var parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function recordBatchResults_(batchName, results) {
+  var stored = loadStoredTestResults_();
+  results.forEach(function (r) {
+    stored[r.name] = {
+      passed: r.passed,
+      durationMs: r.durationMs,
+      message: r.message ? String(r.message).substring(0, 500) : null,
+      batch: batchName,
+    };
+  });
+  PropertiesService.getScriptProperties().setProperty(INTERNAL_TEST_RESULTS_PROPERTY_, JSON.stringify(stored));
+}
+
+/**
+ * Clears every stored batch result. Run this before a fresh full pass
+ * across all batches so no stale result from a previous run lingers in
+ * getInternalTestSummary(). Directly runnable from the Apps Script editor.
+ */
+function clearInternalTestSummary() {
+  PropertiesService.getScriptProperties().deleteProperty(INTERNAL_TEST_RESULTS_PROPERTY_);
+  Logger.log("Internal test summary cleared.");
+}
+
+function runBatch_(batchName, tests) {
+  Logger.log("=== Batch: " + batchName + " (" + tests.length + " tests) ===");
+  var results = runInternalTestList_(tests);
+  recordBatchResults_(batchName, results);
+  var summary = summarizeResults_(results);
+  Logger.log("[BATCH " + batchName + "] " + JSON.stringify(summary));
+  return summary;
+}
+
+/** Foundational/security/setup tests. Run this batch first. Directly runnable from the Apps Script editor. */
+function runInternalTestsCore() {
+  return runBatch_("core", INTERNAL_TESTS_CORE_);
+}
+
+/** Sheets.gs's type-normalization boundary against real Google Sheets Date/Number coercion. */
+function runInternalTestsSheets() {
+  return runBatch_("sheets", INTERNAL_TESTS_SHEETS_);
+}
+
+/** Appointment creation/cancellation/reschedule/idempotency — the heaviest real-Sheets tests. */
+function runInternalTestsBooking() {
+  return runBatch_("booking", INTERNAL_TESTS_BOOKING_);
+}
+
+/** Conversation state, webhook dedup, admin conversation/notification views. */
+function runInternalTestsConversations() {
+  return runBatch_("conversations", INTERNAL_TESTS_CONVERSATIONS_);
+}
+
+/** Admin service CRUD + Google Calendar sync (never touches a real Google Calendar — see the batch's own comment above). */
+function runInternalTestsIntegrations() {
+  return runBatch_("integrations", INTERNAL_TESTS_INTEGRATIONS_);
+}
+
+/**
+ * Combined total/passed/failed/skipped across every batch run since the
+ * last clearInternalTestSummary() — a test whose batch hasn't run yet (or
+ * was cleared) reports "skipped", never silently omitted, so a partial
+ * pass across batches is never mistaken for a complete one.
+ */
+function getInternalTestSummary() {
+  var stored = loadStoredTestResults_();
+  var results = INTERNAL_TESTS_ALL_.map(function (test) {
+    var r = stored[test.name];
+    if (!r) return { name: test.name, status: "skipped" };
+    return {
+      name: test.name,
+      status: r.passed ? "passed" : "failed",
+      durationMs: r.durationMs,
+      message: r.message || undefined,
+      batch: r.batch,
+    };
+  });
+  var passed = results.filter(function (r) { return r.status === "passed"; }).length;
+  var failed = results.filter(function (r) { return r.status === "failed"; }).length;
+  var skipped = results.filter(function (r) { return r.status === "skipped"; }).length;
+  return { total: results.length, passed: passed, failed: failed, skipped: skipped, results: results };
+}
+
+/**
+ * Logs and (in the spreadsheet UI) alerts the combined summary. Directly
+ * runnable from the Apps Script editor or the "Esquece CRM" menu.
+ */
+function showInternalTestSummary() {
+  var summary = getInternalTestSummary();
+  Logger.log(JSON.stringify(summary, null, 2));
+  try {
+    SpreadsheetApp.getUi().alert(
+      "Pruebas internas — " + summary.passed + " OK, " + summary.failed + " fallidas, " +
+        summary.skipped + " pendientes (de " + summary.total + ").",
+    );
+  } catch (e) {
+    // Not running in a spreadsheet UI context (e.g. headless, or from the Node test harness) — logging is enough.
+  }
+  return summary;
+}
+
+/**
+ * Runs every internal test in one execution. Fine for the local Node vm
+ * harness (npm run test:apps-script), which has no execution-time limit
+ * and no real Google Sheets API latency. Against a real, deployed Apps
+ * Script project, use the five runInternalTests*() batch functions above
+ * instead (see FIRST_RUN.md) — this single-execution form is exactly what
+ * exceeded Apps Script's ~6-minute limit in practice.
+ */
+function runAllInternalTests() {
+  var results = runInternalTestList_(INTERNAL_TESTS_ALL_);
+  var summary = summarizeResults_(results);
   Logger.log(JSON.stringify(summary, null, 2));
   return summary;
 }

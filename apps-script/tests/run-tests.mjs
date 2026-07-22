@@ -154,6 +154,9 @@ const PropertiesService = {
       setProperty(key, value) {
         scriptProperties.set(key, value);
       },
+      deleteProperty(key) {
+        scriptProperties.delete(key);
+      },
     };
   },
 };
