@@ -1,4 +1,4 @@
-name: Publicar demostración de reservas
+name: Publicar web de reservas
 
 on:
   push:
@@ -42,6 +42,7 @@ jobs:
         working-directory: web-reservas
         env:
           NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
+          NEXT_PUBLIC_API_BASE_URL: https://esquece.onrender.com
         run: npm run build
 
       - name: Empaquetar la página

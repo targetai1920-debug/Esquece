@@ -4,8 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Reservas | Esquece Barber Studio",
-  description:
-    "Demostración del sistema de reservas de Esquece Barber Studio, Cochabamba.",
+  description: "Reserva tu cita en Esquece Barber Studio, Cochabamba.",
 };
 
 export default function RootLayout({
