@@ -10,12 +10,20 @@ function getBarberServicesSheet_() {
   return getOrCreateSheet_(getSpreadsheet_(), SHEET_NAMES.BARBER_SERVICES);
 }
 
-function getBarberById_(barberId) {
+/**
+ * `barbersRows`, when provided, is an already-loaded BARBERS row array
+ * (e.g. from an availabilityContext_) — used instead of a fresh
+ * sheetToObjects_ read. Omit it (every call site outside the
+ * availability-listing path does) and this reads the sheet itself,
+ * exactly as before.
+ */
+function getBarberById_(barberId, barbersRows) {
+  if (barbersRows) return findInRows_(barbersRows, "barberId", barberId);
   return findRowById_(getBarbersSheet_(), "barberId", barberId);
 }
 
-function requireActiveBarber_(barberId) {
-  var barber = getBarberById_(barberId);
+function requireActiveBarber_(barberId, barbersRows) {
+  var barber = getBarberById_(barberId, barbersRows);
   if (!barber) {
     throw new ApiError(ERROR_CODES.BARBER_NOT_FOUND, "Barbero no encontrado.", false);
   }
@@ -29,18 +37,21 @@ function isActiveRow_(row) {
   return row.active === true || row.active === "true" || row.active === "TRUE";
 }
 
-/** Barber ids linked to a service via an active BARBER_SERVICES row. */
-function listEligibleBarberIdsForService_(serviceId) {
-  return findRowsWhere_(getBarberServicesSheet_(), function (row) {
-    return row.serviceId === serviceId && isActiveRow_(row);
-  }).map(function (row) {
-    return row.barberId;
-  });
+/**
+ * Barber ids linked to a service via an active BARBER_SERVICES row.
+ * `barberServicesRows`, when provided, is an already-loaded row array —
+ * same reuse-vs-fresh-read tradeoff as getBarberById_ above.
+ */
+function listEligibleBarberIdsForService_(serviceId, barberServicesRows) {
+  var rows = barberServicesRows || sheetToObjects_(getBarberServicesSheet_());
+  return rows
+    .filter(function (row) { return row.serviceId === serviceId && isActiveRow_(row); })
+    .map(function (row) { return row.barberId; });
 }
 
 /** BOOKING_RULES.md §1.1 — a barber not linked to the service is never offered for it. */
-function requireBarberEligibleForService_(barberId, serviceId) {
-  var eligibleIds = listEligibleBarberIdsForService_(serviceId);
+function requireBarberEligibleForService_(barberId, serviceId, barberServicesRows) {
+  var eligibleIds = listEligibleBarberIdsForService_(serviceId, barberServicesRows);
   if (eligibleIds.indexOf(barberId) === -1) {
     throw new ApiError(ERROR_CODES.BARBER_NOT_ELIGIBLE, "Este barbero no realiza ese servicio.", false);
   }

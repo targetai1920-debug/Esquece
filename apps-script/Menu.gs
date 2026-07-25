@@ -18,10 +18,10 @@ function onOpen() {
     .addItem("Revisar notificaciones fallidas", "menuShowFailedNotifications_")
     .addItem("Sincronizar calendario", "menuSyncCalendar_")
     .addSeparator()
-    // Run these five in order for a real deployment — each finishes well
+    // Run these six in order for a real deployment — each finishes well
     // under Apps Script's execution limit on its own. The old single
     // "Ejecutar pruebas internas" (runAllInternalTests) is intentionally not
-    // in this menu anymore: it runs all ~29 tests in one execution, which
+    // in this menu anymore: it runs every test in one execution, which
     // is exactly what exceeded the 6-minute limit against a real
     // spreadsheet (see FIRST_RUN.md). runAllInternalTests() itself still
     // exists, for the local Node test harness only.
@@ -32,6 +32,7 @@ function onOpen() {
     .addItem("Pruebas internas: 3) Booking", "runInternalTestsBooking")
     .addItem("Pruebas internas: 4) Conversaciones", "runInternalTestsConversations")
     .addItem("Pruebas internas: 5) Integraciones", "runInternalTestsIntegrations")
+    .addItem("Pruebas internas: 6) Disponibilidad", "runInternalTestsAvailability")
     .addItem("Pruebas internas: ver resumen", "showInternalTestSummary")
     .addSeparator()
     .addItem("Mostrar versión", "showCrmVersion")

@@ -50,8 +50,13 @@ business-wide break.
 
 ## TIME_OFF
 
-`timeOffId, barberId, startDate, endDate, startTime, endTime, allDay, reason, active, createdAt,
-updatedAt`
+`timeOffId, barberId, startDate, endDate, startTime, endTime, allDay, reason, active, startsAt,
+endsAt, createdAt, updatedAt`
+
+`startsAt`/`endsAt` are absolute-instant (UTC ISO) mirrors of
+startDate/startTime and endDate/endTime, computed at creation time —
+Availability.gs's overlap check compares against these directly rather than
+re-deriving them from the four local date/time columns on every read.
 
 ## BLOCKED_SLOTS
 
