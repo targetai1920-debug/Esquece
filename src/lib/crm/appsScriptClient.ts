@@ -76,10 +76,17 @@ interface CallOptions {
 export class AppsScriptCrmClient implements CrmClient {
   private async call<T>(action: string, payload: unknown, responseSchema: z.ZodType<T>, options: CallOptions = {}): Promise<T> {
     const config = getCrmConfig();
-    const envelope = buildSignedRequest(action, payload, config.apiKey, config.signingSecret);
     const start = Date.now();
 
+    // Builds a fresh signed envelope (nonce/requestId/timestamp/signature)
+    // on every call, including a retry — Apps Script's replay protection
+    // (apps-script/Security.gs) rejects a reused nonce with NONCE_REUSED,
+    // so a retried attempt must never resend the first attempt's envelope.
+    // `action`/`payload` (and therefore an idempotencyKey inside payload,
+    // e.g. createAppointment) stay identical across attempts; only the
+    // transport envelope is new each time.
     const attempt = async (): Promise<T> => {
+      const envelope = buildSignedRequest(action, payload, config.apiKey, config.signingSecret);
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
       let httpResponse: Response;
