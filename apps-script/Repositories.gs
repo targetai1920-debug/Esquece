@@ -19,14 +19,23 @@ function canonicalIdString_(value) {
   return String(value).trim();
 }
 
-function findRowById_(sheet, idColumn, id) {
+/**
+ * Same lookup as findRowById_, against an already-loaded row array instead
+ * of a sheet — lets a caller that already read a sheet once (e.g. an
+ * availabilityContext_, Availability.gs) reuse those rows instead of
+ * triggering another sheetToObjects_ call.
+ */
+function findInRows_(rows, idColumn, id) {
   var target = canonicalIdString_(id);
   if (target === null) return null;
-  var rows = sheetToObjects_(sheet);
   for (var i = 0; i < rows.length; i++) {
     if (canonicalIdString_(rows[i][idColumn]) === target) return rows[i];
   }
   return null;
+}
+
+function findRowById_(sheet, idColumn, id) {
+  return findInRows_(sheetToObjects_(sheet), idColumn, id);
 }
 
 function findRowsWhere_(sheet, predicate) {

@@ -10,9 +10,9 @@
  * leave real production configuration corrupted. If an *older* run ever
  * did leave something behind, resetInternalTestEnvironment() cleans it up.
  *
- * Split into five batches (INTERNAL_TESTS_CORE_/SHEETS_/BOOKING_/
- * CONVERSATIONS_/INTEGRATIONS_) run via runInternalTestsCore() etc. —
- * against a real Apps Script deployment, running all ~29 tests in one
+ * Split into six batches (INTERNAL_TESTS_CORE_/SHEETS_/BOOKING_/
+ * CONVERSATIONS_/INTEGRATIONS_/AVAILABILITY_) run via runInternalTestsCore()
+ * etc. — against a real Apps Script deployment, running every test in one
  * execution (runAllInternalTests()) was slow enough against real Google
  * Sheets latency to exceed Apps Script's ~6-minute execution limit before
  * ever printing a summary. Each batch function is small enough to finish
@@ -122,6 +122,31 @@ function makeFakeCalendarAppForTests_() {
  */
 function makeSheetsStyleDateForTests_(year, month, day, hour, minute) {
   return new Date(Date.UTC(year, month - 1, day, hour || 0, minute || 0));
+}
+
+/**
+ * Counts sheetToObjects_ calls made during `fn`, by temporarily replacing
+ * the global function with a counting wrapper that delegates to the real
+ * one, then restoring it — always, even if `fn` throws, so a failing
+ * assertion can never leave every other test in this file silently
+ * over/under-counting reads too. Used by the availability-batch test that
+ * proves actionGetAvailability_ reads each sheet a bounded number of times
+ * per request, not once per candidate slot/barber (Availability.gs's
+ * buildAvailabilityContext_).
+ */
+function countSheetReadsDuring_(fn) {
+  var original = sheetToObjects_;
+  var callCount = 0;
+  sheetToObjects_ = function (sheet) {
+    callCount += 1;
+    return original(sheet);
+  };
+  try {
+    fn();
+  } finally {
+    sheetToObjects_ = original;
+  }
+  return callCount;
 }
 
 // =====================================================================
@@ -869,6 +894,289 @@ var INTERNAL_TESTS_INTEGRATIONS_ = [
   },
 ];
 
+// =====================================================================
+// Batch: Availability — regression coverage for the read-count
+// optimization in Availability.gs (buildAvailabilityContext_): every rule
+// that can exclude a candidate slot still excludes it, anyBarber still
+// combines barbers correctly, createAppointment still revalidates fresh
+// under the lock regardless of any stale context in scope, and the
+// request-scoped read count itself stays bounded and barber-count-
+// independent.
+// =====================================================================
+var INTERNAL_TESTS_AVAILABILITY_ = [
+  {
+    name: "checkSlotValidity_ returns identical results with and without a preloaded availabilityContext_",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var settings = getSettingsMap_();
+      var context = buildAvailabilityContext_(testDate, settings);
+      // Spans before-opening, exactly-at-opening, midday, exactly-at-closing
+      // (a 30-minute service ending exactly at 16:00 must still be valid),
+      // and after-closing — the boundary conditions most likely to diverge
+      // if the context-based path ever computed something differently from
+      // the fresh-read fallback path.
+      var candidateTimes = ["07:00", "08:00", "12:00", "15:30", "16:00", "20:00"];
+      try {
+        candidateTimes.forEach(function (time) {
+          var withoutContext = checkSlotValidity_({
+            barberId: "demo-barber-1", localDate: testDate, localStartTime: time,
+            totalDurationMinutes: 30, settings: settings,
+          });
+          var withContext = checkSlotValidity_({
+            barberId: "demo-barber-1", localDate: testDate, localStartTime: time,
+            totalDurationMinutes: 30, settings: settings, context: context,
+          });
+          assertEqual_(withContext, withoutContext, "checkSlotValidity_ at " + time + " (context vs fresh reads)");
+        });
+      } finally {
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "actionGetAvailability_ excludes a slot already taken by an active appointment",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var testPhone = "59100000018";
+      var created;
+      try {
+        var before = actionGetAvailability_({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: testDate });
+        if (!before.slots.some(function (s) { return s.localStartTime === "10:00"; })) {
+          throw new Error("expected 10:00 to be free before booking it");
+        }
+
+        created = actionCreateAppointment_({
+          idempotencyKey: "test-avail-appt-block-" + testDate, source: "WEBSITE", serviceId: "demo-service-1",
+          barberId: "demo-barber-1", localDate: testDate, localStartTime: "10:00",
+          customer: { name: "Prueba Disponibilidad Cita", phoneE164: testPhone },
+        }).appointment;
+
+        var after = actionGetAvailability_({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: testDate });
+        if (after.slots.some(function (s) { return s.localStartTime === "10:00"; })) {
+          throw new Error("expected 10:00 to be excluded from availability once booked");
+        }
+      } finally {
+        if (created) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === created.appointmentId; });
+        }
+        removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === testPhone; });
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "actionGetAvailability_ excludes slots overlapping a recurring break",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var dayOfWeek = weekdayOfLocalDate_(testDate, getBusinessTimezone_());
+      var createdBreak;
+      try {
+        var before = actionGetAvailability_({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: testDate });
+        if (!before.slots.some(function (s) { return s.localStartTime === "12:00"; })) {
+          throw new Error("expected 12:00 to be free before adding the break");
+        }
+
+        createdBreak = actionAdminCreateBreak_({
+          barberId: "demo-barber-1", startTime: "12:00", endTime: "13:00", recurring: true, dayOfWeek: dayOfWeek,
+        }).break;
+
+        var after = actionGetAvailability_({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: testDate });
+        if (after.slots.some(function (s) { return s.localStartTime === "12:00"; })) {
+          throw new Error("expected 12:00 to be excluded once a recurring break covers it");
+        }
+      } finally {
+        if (createdBreak) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.BREAKS, function (row) { return row.breakId === createdBreak.breakId; });
+        }
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "actionGetAvailability_ excludes every slot on a day fully covered by time off",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var createdTimeOff;
+      try {
+        var before = actionGetAvailability_({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: testDate });
+        if (before.slots.length === 0) throw new Error("expected at least one free slot before time off");
+
+        createdTimeOff = actionAdminCreateTimeOff_({
+          barberId: "demo-barber-1", startDate: testDate, endDate: testDate, allDay: true, reason: "Prueba interna",
+        }).timeOff;
+
+        var after = actionGetAvailability_({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: testDate });
+        if (after.slots.length !== 0) {
+          throw new Error("expected zero slots on a day fully covered by time off, got " + after.slots.length);
+        }
+      } finally {
+        if (createdTimeOff) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.TIME_OFF, function (row) { return row.timeOffId === createdTimeOff.timeOffId; });
+        }
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "actionGetAvailability_ excludes slots covered by a business-wide blocked slot and, separately, by a barber-specific one",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var generalBlock, barberBlock;
+      try {
+        var before1 = actionGetAvailability_({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: testDate });
+        var before2 = actionGetAvailability_({ serviceId: "demo-service-1", barberId: "demo-barber-2", localDate: testDate });
+        if (!before1.slots.some(function (s) { return s.localStartTime === "09:00"; })) throw new Error("expected barber 1's 09:00 free before blocking");
+        if (!before2.slots.some(function (s) { return s.localStartTime === "14:00"; })) throw new Error("expected barber 2's 14:00 free before blocking");
+
+        generalBlock = actionAdminCreateBlockedSlot_({ localDate: testDate, startTime: "09:00", endTime: "09:30", reason: "Prueba general" }).blockedSlot;
+        barberBlock = actionAdminCreateBlockedSlot_({ barberId: "demo-barber-2", localDate: testDate, startTime: "14:00", endTime: "14:30", reason: "Prueba barbero" }).blockedSlot;
+
+        var after1 = actionGetAvailability_({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: testDate });
+        if (after1.slots.some(function (s) { return s.localStartTime === "09:00"; })) {
+          throw new Error("business-wide block should exclude 09:00 for every barber, including barber 1");
+        }
+
+        var after2 = actionGetAvailability_({ serviceId: "demo-service-1", barberId: "demo-barber-2", localDate: testDate });
+        if (after2.slots.some(function (s) { return s.localStartTime === "14:00"; })) {
+          throw new Error("barber-specific block should exclude 14:00 for barber 2");
+        }
+
+        // The barber-specific block on barber 2 must not affect barber 1.
+        var barber1At14 = actionGetAvailability_({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: testDate });
+        if (!barber1At14.slots.some(function (s) { return s.localStartTime === "14:00"; })) {
+          throw new Error("barber 2's blocked slot should not affect barber 1's 14:00 slot");
+        }
+      } finally {
+        if (generalBlock) removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.BLOCKED_SLOTS, function (row) { return row.blockedSlotId === generalBlock.blockedSlotId; });
+        if (barberBlock) removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.BLOCKED_SLOTS, function (row) { return row.blockedSlotId === barberBlock.blockedSlotId; });
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "actionGetAvailability_ with anyBarber=true unions eligible barbers and reports each slot's barberIds",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var createdBlock;
+      try {
+        // Take demo-barber-2 out of the running for 09:00 specifically, so
+        // the combined anyBarber result at 09:00 should list only barber 1,
+        // while some other still-free slot lists both.
+        createdBlock = actionAdminCreateBlockedSlot_({ barberId: "demo-barber-2", localDate: testDate, startTime: "09:00", endTime: "09:30" }).blockedSlot;
+
+        var result = actionGetAvailability_({ serviceId: "demo-service-1", anyBarber: true, localDate: testDate });
+
+        var slotAt9 = result.slots.filter(function (s) { return s.localStartTime === "09:00"; })[0];
+        if (!slotAt9) throw new Error("expected 09:00 still offered via barber 1 even though barber 2 is blocked then");
+        if (slotAt9.barberIds.length !== 1 || slotAt9.barberIds[0] !== "demo-barber-1") {
+          throw new Error("expected only demo-barber-1 listed at 09:00, got " + JSON.stringify(slotAt9.barberIds));
+        }
+
+        var slotAt11 = result.slots.filter(function (s) { return s.localStartTime === "11:00"; })[0];
+        if (!slotAt11) throw new Error("expected 11:00 to be offered");
+        if (slotAt11.barberIds.length !== 2 || slotAt11.barberIds.indexOf("demo-barber-1") === -1 || slotAt11.barberIds.indexOf("demo-barber-2") === -1) {
+          throw new Error("expected both barbers listed at 11:00, got " + JSON.stringify(slotAt11.barberIds));
+        }
+      } finally {
+        if (createdBlock) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.BLOCKED_SLOTS, function (row) { return row.blockedSlotId === createdBlock.blockedSlotId; });
+        }
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "actionGetAvailability_ reads each sheet a bounded number of times, independent of candidate-slot count or barber count",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      try {
+        var oneBarberCalls = countSheetReadsDuring_(function () {
+          actionGetAvailability_({ serviceId: "demo-service-1", barberId: "demo-barber-1", localDate: testDate });
+        });
+        var anyBarberCalls = countSheetReadsDuring_(function () {
+          actionGetAvailability_({ serviceId: "demo-service-1", anyBarber: true, localDate: testDate });
+        });
+
+        if (oneBarberCalls > 10) {
+          throw new Error("expected a small, request-scoped number of sheetToObjects_ calls for one barber (8:00-16:00, 30-minute slots), got " + oneBarberCalls);
+        }
+        if (anyBarberCalls !== oneBarberCalls) {
+          throw new Error(
+            "expected the same sheetToObjects_ call count regardless of how many barbers were evaluated (one barber: " +
+              oneBarberCalls + ", anyBarber across 2 barbers: " + anyBarberCalls + ") — a per-barber sheet re-read would make these differ",
+          );
+        }
+      } finally {
+        removeDemoData();
+      }
+    },
+  },
+  {
+    name: "createAppointment ignores any stale availabilityContext_ and still revalidates fresh under the script lock",
+    run: function () {
+      setupCRM();
+      seedDemoData();
+      var testDate = nextWeekdayLocalDate_(formatUtcToLocalDate_(new Date(), getBusinessTimezone_()), 3);
+      var testPhoneA = "59100000019";
+      var testPhoneB = "59100000020";
+      var createdIds = [];
+      try {
+        // Simulate exactly what actionGetAvailability_ does: snapshot a
+        // context before either booking attempt happens.
+        var staleContext = buildAvailabilityContext_(testDate, getSettingsMap_());
+        var stalePreview = checkSlotValidity_({
+          barberId: "demo-barber-1", localDate: testDate, localStartTime: "09:00",
+          totalDurationMinutes: 30, context: staleContext,
+        });
+        if (!stalePreview.valid) throw new Error("expected the slot to be free before either booking attempt");
+
+        var first = actionCreateAppointment_({
+          idempotencyKey: "test-stale-context-a-" + testDate, source: "WEBSITE", serviceId: "demo-service-1",
+          barberId: "demo-barber-1", localDate: testDate, localStartTime: "09:00",
+          customer: { name: "Prueba Contexto A", phoneE164: testPhoneA },
+        });
+        createdIds.push(first.appointment.appointmentId);
+
+        // staleContext.appointmentsRows still shows the slot as free —
+        // createAppointment_'s own checkSlotValidity_ calls never pass a
+        // context (Appointments.gs), so a second booking attempt for the
+        // identical slot must still be rejected using genuinely fresh data,
+        // not whatever this now-stale snapshot still believes.
+        assertThrowsCode_(function () {
+          var second = actionCreateAppointment_({
+            idempotencyKey: "test-stale-context-b-" + testDate, source: "WEBSITE", serviceId: "demo-service-1",
+            barberId: "demo-barber-1", localDate: testDate, localStartTime: "09:00",
+            customer: { name: "Prueba Contexto B", phoneE164: testPhoneB },
+          });
+          createdIds.push(second.appointment.appointmentId); // would only run if it wrongly succeeded
+        }, ERROR_CODES.SLOT_UNAVAILABLE, "second booking against a slot the stale context still thinks is free");
+      } finally {
+        createdIds.forEach(function (id) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.APPOINTMENTS, function (row) { return row.appointmentId === id; });
+        });
+        [testPhoneA, testPhoneB].forEach(function (phone) {
+          removeRowsMatching_(getSpreadsheet_(), SHEET_NAMES.CUSTOMERS, function (row) { return row.phoneE164 === phone; });
+        });
+        removeDemoData();
+      }
+    },
+  },
+];
+
 /** Canonical roster of every internal test across all batches. */
 var INTERNAL_TESTS_ALL_ = [].concat(
   INTERNAL_TESTS_CORE_,
@@ -876,6 +1184,7 @@ var INTERNAL_TESTS_ALL_ = [].concat(
   INTERNAL_TESTS_BOOKING_,
   INTERNAL_TESTS_CONVERSATIONS_,
   INTERNAL_TESTS_INTEGRATIONS_,
+  INTERNAL_TESTS_AVAILABILITY_,
 );
 
 /**
@@ -990,6 +1299,11 @@ function runInternalTestsConversations() {
 /** Admin service CRUD + Google Calendar sync (never touches a real Google Calendar — see the batch's own comment above). */
 function runInternalTestsIntegrations() {
   return runBatch_("integrations", INTERNAL_TESTS_INTEGRATIONS_);
+}
+
+/** Availability read-count optimization: same results with/without a context, every blocking rule, anyBarber, and createAppointment's fresh revalidation. */
+function runInternalTestsAvailability() {
+  return runBatch_("availability", INTERNAL_TESTS_AVAILABILITY_);
 }
 
 /**

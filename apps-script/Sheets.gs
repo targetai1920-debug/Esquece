@@ -50,9 +50,18 @@ SHEET_HEADERS[SHEET_NAMES.BREAKS] = [
   "breakId", "barberId", "date", "dayOfWeek", "startTime", "endTime", "recurring",
   "reason", "active", "createdAt", "updatedAt",
 ];
+// startsAt/endsAt: absolute-instant mirrors of startDate/startTime and
+// endDate/endTime, computed by Scheduling.gs's actionAdminCreateTimeOff_
+// specifically for Availability.gs's getTimeOffIntervalsMinutesForDate_ to
+// compare against — they must stay in this header list, or they're
+// silently dropped on write (appendRowFromObject_ only writes columns
+// present here) and every TIME_OFF row reads back with startsAt/endsAt
+// undefined, so no time off row can ever overlap-match and time off stops
+// blocking availability at all (discovered via this file's own
+// availability regression tests — see Tests.gs's availability batch).
 SHEET_HEADERS[SHEET_NAMES.TIME_OFF] = [
   "timeOffId", "barberId", "startDate", "endDate", "startTime", "endTime",
-  "allDay", "reason", "active", "createdAt", "updatedAt",
+  "allDay", "reason", "active", "startsAt", "endsAt", "createdAt", "updatedAt",
 ];
 SHEET_HEADERS[SHEET_NAMES.BLOCKED_SLOTS] = [
   "blockedSlotId", "barberId", "localDate", "startTime", "endTime", "reason",
