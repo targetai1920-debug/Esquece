@@ -81,6 +81,23 @@ describe("WhatsApp webhook", () => {
     expect(response.status).toBe(403);
   });
 
+  it("GET verification returns 400 when required parameters are missing", async () => {
+    const response = await GET(new NextRequest(new URL("http://localhost:3000/api/whatsapp/webhook")));
+    expect(response.status).toBe(400);
+  });
+
+  it("GET verification returns 400 when only hub.challenge is missing", async () => {
+    const url = `http://localhost:3000/api/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=${VERIFY_TOKEN}`;
+    const response = await GET(new NextRequest(new URL(url)));
+    expect(response.status).toBe(400);
+  });
+
+  it("GET verification rejects hub.mode that isn't 'subscribe', even with a valid token and challenge", async () => {
+    const url = `http://localhost:3000/api/whatsapp/webhook?hub.mode=unsubscribe&hub.verify_token=${VERIFY_TOKEN}&hub.challenge=challenge-123`;
+    const response = await GET(new NextRequest(new URL(url)));
+    expect(response.status).toBe(403);
+  });
+
   it("POST rejects a request with a missing signature", async () => {
     const body = textMessagePayload("wamid.1", "59171111111", "Hola");
     const response = await POST(postRequest(body));

@@ -30,13 +30,20 @@ WhatsApp → API Setup page.
 
 In the Meta app's WhatsApp → Configuration page, set:
 
-- **Callback URL**: `https://<your-render-domain>/api/whatsapp/webhook`
+- **Callback URL**: `https://esquece.onrender.com/api/whatsapp/webhook` (this backend's current
+  Render deployment — adjust here and below if it ever moves to a different domain).
 - **Verify token**: any long random string you choose — this must exactly match
   `META_VERIFY_TOKEN` in the Next.js deployment's environment (see step 6). Meta calls this the
   webhook verify token; it has nothing to do with the access token from step 3.
 
 Click **Verify and save**. This triggers the `GET` handshake this app already implements
 (`src/app/api/whatsapp/webhook/route.ts`) — it must succeed before Meta will deliver any events.
+The handshake responds:
+
+- **400 Bad Request** if `hub.mode`, `hub.verify_token`, or `hub.challenge` is missing.
+- **403 Forbidden** if `hub.mode` isn't exactly `subscribe`, or if `hub.verify_token` doesn't
+  match `META_VERIFY_TOKEN` — even one of these being wrong is enough to fail closed.
+- **200 OK** with the raw `hub.challenge` value as the body, only when all of the above check out.
 
 Subscribe the webhook to at least the `messages` field (Manage → Webhook fields).
 
@@ -92,7 +99,10 @@ described as tested against live Meta traffic, not just mocks.
 
 - **Webhook verification fails**: double-check `META_VERIFY_TOKEN` matches exactly (no trailing
   whitespace) between Meta's dashboard and the Next.js environment, and that the deployment is
-  already running with that environment variable before clicking "Verify and save".
+  already running with that environment variable before clicking "Verify and save". A `403`
+  response means Meta reached the endpoint but `hub.mode`/`hub.verify_token` didn't check out; a
+  `400` means Meta's request was missing one of `hub.mode`/`hub.verify_token`/`hub.challenge`
+  entirely (unusual — worth checking Meta's own request logs if this happens).
 - **401 on every real inbound message**: `META_APP_SECRET` mismatch, or the callback URL is
   pointed at a different deployment/environment than the one holding the current secret.
 - **Reminders/cancellations never send**: check `WHATSAPP_*_TEMPLATE_NAME` are set and the

@@ -25,11 +25,19 @@ export async function GET(request: NextRequest) {
   const token = params.get("hub.verify_token");
   const challenge = params.get("hub.challenge");
 
-  const config = getMetaWebhookConfig();
-  if (mode === "subscribe" && verifyTokenMatches(token, config.verifyToken) && challenge) {
-    return new NextResponse(challenge, { status: 200 });
+  if (!mode || !token || !challenge) {
+    return new NextResponse("Missing required parameters", { status: 400 });
   }
-  return new NextResponse("Forbidden", { status: 403 });
+  if (mode !== "subscribe") {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
+
+  const config = getMetaWebhookConfig();
+  if (!verifyTokenMatches(token, config.verifyToken)) {
+    return new NextResponse("Forbidden", { status: 403 });
+  }
+
+  return new NextResponse(challenge, { status: 200 });
 }
 
 /** Meta batches multiple entries/messages per delivery — a generous ceiling above the public API's, still bounded against an abusive/oversized payload (Phase K hardening). */
