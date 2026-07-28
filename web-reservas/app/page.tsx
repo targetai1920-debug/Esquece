@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
+import esquLogo from "../public/esquece-logo.webp";
 import {
   ApiError,
   createAppointment,
@@ -95,7 +97,7 @@ function errorMessage(err: unknown): string {
 function BrandLogo({ large = false }: { large?: boolean }) {
   return (
     <span className={`logo-frame ${large ? "large" : ""}`} aria-hidden="true">
-      <img src="./esquece-logo.webp" alt="" width={large ? 260 : 55} height={large ? 342 : 72} />
+      <Image src={esquLogo} alt="" width={large ? 260 : 55} height={large ? 342 : 72} unoptimized />
     </span>
   );
 }
@@ -146,20 +148,29 @@ export default function Home() {
   const idempotencyPayloadRef = useRef<string | null>(null);
 
   // Business data — no fictitious fallback: a failure here blocks booking entirely.
+  // The fetch itself is deferred one microtask so every state update below runs
+  // inside a callback rather than synchronously in the effect body (React's
+  // recommended shape for an effect that synchronizes with an external system —
+  // https://react.dev/learn/you-might-not-need-an-effect) — this changes nothing
+  // observable (a microtask still flushes before the browser paints) but keeps
+  // every update, including the initial "start loading" one, inside a callback.
   useEffect(() => {
     let cancelled = false;
-    setSettingsLoading(true);
-    setSettingsError(null);
-    getBusinessSettings()
-      .then((data) => {
-        if (!cancelled) setSettings(data);
-      })
-      .catch((err) => {
-        if (!cancelled) setSettingsError(errorMessage(err));
-      })
-      .finally(() => {
-        if (!cancelled) setSettingsLoading(false);
-      });
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSettingsLoading(true);
+      setSettingsError(null);
+      getBusinessSettings()
+        .then((data) => {
+          if (!cancelled) setSettings(data);
+        })
+        .catch((err) => {
+          if (!cancelled) setSettingsError(errorMessage(err));
+        })
+        .finally(() => {
+          if (!cancelled) setSettingsLoading(false);
+        });
+    });
     return () => {
       cancelled = true;
     };
@@ -167,18 +178,21 @@ export default function Home() {
 
   useEffect(() => {
     let cancelled = false;
-    setServicesLoading(true);
-    setServicesError(null);
-    getServices()
-      .then((data) => {
-        if (!cancelled) setServices(data);
-      })
-      .catch((err) => {
-        if (!cancelled) setServicesError(errorMessage(err));
-      })
-      .finally(() => {
-        if (!cancelled) setServicesLoading(false);
-      });
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setServicesLoading(true);
+      setServicesError(null);
+      getServices()
+        .then((data) => {
+          if (!cancelled) setServices(data);
+        })
+        .catch((err) => {
+          if (!cancelled) setServicesError(errorMessage(err));
+        })
+        .finally(() => {
+          if (!cancelled) setServicesLoading(false);
+        });
+    });
     return () => {
       cancelled = true;
     };
@@ -187,24 +201,27 @@ export default function Home() {
   // Barbers eligible for the chosen service — refetched every time the service changes.
   useEffect(() => {
     const serviceId = selectedService?.serviceId;
-    if (!serviceId) {
-      setBarbers(null);
-      setBarbersError(null);
-      return;
-    }
     let cancelled = false;
-    setBarbersLoading(true);
-    setBarbersError(null);
-    getBarbers(serviceId)
-      .then((data) => {
-        if (!cancelled) setBarbers(data);
-      })
-      .catch((err) => {
-        if (!cancelled) setBarbersError(errorMessage(err));
-      })
-      .finally(() => {
-        if (!cancelled) setBarbersLoading(false);
-      });
+    queueMicrotask(() => {
+      if (cancelled) return;
+      if (!serviceId) {
+        setBarbers(null);
+        setBarbersError(null);
+        return;
+      }
+      setBarbersLoading(true);
+      setBarbersError(null);
+      getBarbers(serviceId)
+        .then((data) => {
+          if (!cancelled) setBarbers(data);
+        })
+        .catch((err) => {
+          if (!cancelled) setBarbersError(errorMessage(err));
+        })
+        .finally(() => {
+          if (!cancelled) setBarbersLoading(false);
+        });
+    });
     return () => {
       cancelled = true;
     };
@@ -212,32 +229,34 @@ export default function Home() {
 
   // Real availability — refetched on service/barber/date change and whenever this step is re-entered.
   useEffect(() => {
-    if (!selectedService || !selectedBarberId || !selectedDate) {
-      setAvailableSlots(null);
-      setAvailabilityError(null);
-      return;
-    }
-    const serviceId = selectedService.serviceId;
-    const localDate = dateId(selectedDate);
-    const isAny = selectedBarberId === ANY_BARBER_ID;
     let cancelled = false;
-    setAvailabilityLoading(true);
-    setAvailabilityError(null);
-    setAvailableSlots(null);
-    getAvailability(isAny ? { serviceId, localDate, anyBarber: true } : { serviceId, localDate, barberId: selectedBarberId })
-      .then((slots) => {
-        if (!cancelled) setAvailableSlots(slots);
-      })
-      .catch((err) => {
-        if (!cancelled) setAvailabilityError(errorMessage(err));
-      })
-      .finally(() => {
-        if (!cancelled) setAvailabilityLoading(false);
-      });
+    queueMicrotask(() => {
+      if (cancelled) return;
+      if (!selectedService || !selectedBarberId || !selectedDate) {
+        setAvailableSlots(null);
+        setAvailabilityError(null);
+        return;
+      }
+      const serviceId = selectedService.serviceId;
+      const localDate = dateId(selectedDate);
+      const isAny = selectedBarberId === ANY_BARBER_ID;
+      setAvailabilityLoading(true);
+      setAvailabilityError(null);
+      setAvailableSlots(null);
+      getAvailability(isAny ? { serviceId, localDate, anyBarber: true } : { serviceId, localDate, barberId: selectedBarberId })
+        .then((slots) => {
+          if (!cancelled) setAvailableSlots(slots);
+        })
+        .catch((err) => {
+          if (!cancelled) setAvailabilityError(errorMessage(err));
+        })
+        .finally(() => {
+          if (!cancelled) setAvailabilityLoading(false);
+        });
+    });
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedService, selectedBarberId, selectedDate, step, availabilityRetryTick]);
 
   const dayOpenByIndex = useMemo(() => {

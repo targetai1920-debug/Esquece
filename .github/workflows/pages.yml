@@ -4,6 +4,21 @@ on:
   push:
     branches: [main]
     paths:
+      - "src/**"
+      - "tests/**"
+      - "apps-script/**"
+      - "package.json"
+      - "package-lock.json"
+      - "web-reservas/**"
+      - ".github/workflows/pages.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "apps-script/**"
+      - "package.json"
+      - "package-lock.json"
       - "web-reservas/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
@@ -14,11 +29,50 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  # Valida el backend (proyecto principal) — la publicación en GitHub Pages
+  # no debe ocurrir si esto falla, aunque este workflow solo publique
+  # web-reservas/: el frontend depende del contrato de esta API pública.
+  validate-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Instalar dependencias del proyecto principal
+        run: npm ci
+
+      - name: Lint del proyecto principal
+        run: npm run lint
+
+      - name: Typecheck del proyecto principal
+        run: npm run typecheck
+
+      - name: Pruebas del proyecto principal
+        run: npm test
+
+      - name: Pruebas de Apps Script
+        run: npm run test:apps-script
+
+      - name: Compilar el proyecto principal
+        run: npm run build
+
+  # Valida y compila web-reservas/ — solo corre si el backend pasó todas
+  # sus validaciones. Usa --if-present para lint/typecheck/test porque son
+  # scripts propios de este subproyecto: si alguno se quita en el futuro,
+  # el workflow no debe fallar buscando un script inexistente.
+  validate-and-build-frontend:
+    needs: validate-backend
     runs-on: ubuntu-latest
     steps:
       - name: Descargar el repositorio
@@ -38,6 +92,18 @@ jobs:
         working-directory: web-reservas
         run: npm ci
 
+      - name: Lint de web-reservas
+        working-directory: web-reservas
+        run: npm run lint --if-present
+
+      - name: Typecheck de web-reservas
+        working-directory: web-reservas
+        run: npm run typecheck --if-present
+
+      - name: Pruebas de web-reservas
+        working-directory: web-reservas
+        run: npm test --if-present
+
       - name: Compilar la página
         working-directory: web-reservas
         env:
@@ -51,11 +117,12 @@ jobs:
           path: web-reservas/out
 
   deploy:
+    if: github.event_name != 'pull_request'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    needs: build
+    needs: validate-and-build-frontend
     steps:
       - name: Publicar en GitHub Pages
         id: deployment
