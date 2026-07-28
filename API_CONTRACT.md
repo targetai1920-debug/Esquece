@@ -145,6 +145,71 @@ health
 signature: 19a7d590f15cf4c81e7be74fb7d042262d143296eb139fd7f353db11e194879d
 ```
 
+**Vector 4** — Unicode `customerNotes` (accented characters). This is the vector that reproduced a
+real production `INVALID_SIGNATURE` failure on `createAppointment`: Apps Script's
+`Utilities.computeHmacSha256Signature(message, secret)` two-argument overload does not reliably
+encode non-ASCII input as UTF-8, so `Security.gs` must call the **three-argument overload with
+`Utilities.Charset.UTF_8`** explicitly. ASCII-only canonical strings (Vectors 1-3) happen to
+produce identical bytes either way, which is why every action used before `createAppointment`
+(`health`, `listServices`, `listBarbersForService`, `getAvailability`, `validateSlot`, ...) never
+surfaced this:
+
+```
+payload: {"serviceId":"svc_1","barberId":"barber_1","localDate":"2026-07-30","localStartTime":"11:30","customerNotes":"Género indicado por el cliente: Hombre."}
+version:   1
+timestamp: 1700000000000
+nonce:     test-nonce-4
+requestId: test-request-id-4
+action:    createAppointment
+
+canonicalString:
+1
+1700000000000
+test-nonce-4
+test-request-id-4
+createAppointment
+{"barberId":"barber_1","customerNotes":"Género indicado por el cliente: Hombre.","localDate":"2026-07-30","localStartTime":"11:30","serviceId":"svc_1"}
+
+signature: f854f0816804dffe13f4a449566ba2a2edac068282cd32e18916892be44d406a
+```
+
+**Vector 5** — Unicode customer name (all Spanish accented letters + `ñ`):
+
+```
+payload: {"customer":{"name":"José Núñez","phoneE164":"+59170000000"},"serviceId":"svc_1"}
+nonce:     test-nonce-5
+requestId: test-request-id-5
+action:    createAppointment
+
+signature: 5be1550964aab6df803a0d9004baac3cfc0e7668646d6cd09ab98569822a41fc
+```
+
+**Vector 6** — emoji in `customerNotes`:
+
+```
+payload: {"serviceId":"svc_1","customerNotes":"Reserva confirmada 💈✂️"}
+nonce:     test-nonce-6
+requestId: test-request-id-6
+action:    createAppointment
+
+signature: d1d6ef6f4b5c5b7dbe70bc1591b6ba82a5eabaec41fd59b9f269733c522f25f5
+```
+
+**Vector 7** — newline + accented characters in `customerNotes`:
+
+```
+payload: {"serviceId":"svc_1","customerNotes":"Línea uno\nLínea dos: ñ á é í ó ú"}
+nonce:     test-nonce-7
+requestId: test-request-id-7
+action:    createAppointment
+
+signature: d59bfc26a0095ef1f23708564f8bc60bf8694409092617b002b52cfd21cfa58b
+```
+
+All four Unicode vectors use signing secret `test-signing-secret` and `timestamp: 1700000000000`,
+same as Vectors 1-3. See `tests/crm-signing.test.ts` (Next.js) and `apps-script/Tests.gs`'s
+`INTERNAL_TESTS_CORE_` batch (Apps Script) for the executable form of all seven vectors.
+
 ## Response envelope
 
 Success:
