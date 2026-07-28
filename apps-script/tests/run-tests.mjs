@@ -183,9 +183,26 @@ const Utilities = {
   getUuid() {
     return crypto.randomUUID();
   },
-  computeHmacSha256Signature(value, key) {
-    const bytes = crypto.createHmac("sha256", key).update(value, "utf8").digest();
-    return Array.from(bytes).map((b) => (b > 127 ? b - 256 : b));
+  // Models the real, documented Apps Script Utilities behavior: the 2-arg
+  // overload (no explicit Charset) does NOT reliably encode the string as
+  // UTF-8 for non-ASCII input, while the 3-arg overload with
+  // Utilities.Charset.UTF_8 does. This distinction is what
+  // apps-script/Security.gs's computeHmacHex_ depends on (must pass
+  // Charset.UTF_8 explicitly) to byte-match Node's crypto.createHmac(...)
+  // .update(str, "utf8") on the Next.js side — see SECURITY.md. Without
+  // this fidelity, `npm run test:apps-script` could never reproduce the
+  // production INVALID_SIGNATURE bug this file's Unicode test vectors
+  // (apps-script/Tests.gs) guard against: for ASCII-only strings both
+  // encodings produce identical bytes, which is exactly why every action
+  // used before createAppointment (health, listServices, validateSlot,
+  // getAvailability, ...) never surfaced this.
+  computeHmacSha256Signature(value, key, charset) {
+    const bytes =
+      charset === "UTF_8"
+        ? Buffer.from(value, "utf8")
+        : Buffer.from(Array.from(value, (ch) => ch.charCodeAt(0) & 0xff));
+    const digest = crypto.createHmac("sha256", key).update(bytes).digest();
+    return Array.from(digest).map((b) => (b > 127 ? b - 256 : b));
   },
   DigestAlgorithm: { SHA_256: "SHA_256" },
   Charset: { UTF_8: "UTF_8" },

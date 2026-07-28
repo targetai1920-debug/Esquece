@@ -48,6 +48,16 @@ CRM call is an explicitly signed request over the public internet:
 - The stable-serialization algorithm is implemented identically in Next.js (`lib/crm/signing.ts`)
   and Apps Script (`Security.gs`), verified against shared test vectors in `API_CONTRACT.md` so
   the two independent implementations can't silently drift apart.
+- **Charset**: Apps Script's `Security.gs` computes the HMAC with
+  `Utilities.computeHmacSha256Signature(message, secret, Utilities.Charset.UTF_8)` — the charset
+  argument must be explicit. The two-argument overload (no charset) does not reliably encode
+  non-ASCII `message` bytes the same way Node's `crypto.createHmac(...).update(str, "utf8")` does
+  on the Next.js side, which byte-for-byte matches only for ASCII input. A `canonicalString`
+  containing accented characters, emoji, or any other non-ASCII text (e.g. a customer's
+  `customerNotes` on `createAppointment`) would otherwise sign to a different value on each side
+  and fail verification with `INVALID_SIGNATURE`, even though nothing was tampered with. See
+  `API_CONTRACT.md` Vectors 4-7 for the shared Unicode test vectors that guard against a
+  regression here.
 - Apps Script rejects the request (without revealing which check failed) if: the API key doesn't
   match, the signature doesn't match (constant-time compare), the timestamp is more than 5
   minutes old or from the future, the nonce was already seen (`CacheService`), the action/version

@@ -67,7 +67,15 @@ function buildCanonicalString_(envelope) {
 }
 
 function computeHmacHex_(message, secret) {
-  var bytes = Utilities.computeHmacSha256Signature(message, secret);
+  // Explicit UTF_8 charset: the 2-arg overload's implicit charset does not
+  // reliably match the UTF-8 encoding Node's crypto.createHmac(...).update()
+  // uses on the Next.js side (lib/crm/signing.ts), which is byte-identical
+  // only for ASCII messages. Any canonicalString containing non-ASCII
+  // characters (e.g. customerNotes with accents, as in createAppointment)
+  // would sign with a different byte sequence than Next.js and fail
+  // verification with INVALID_SIGNATURE — see SECURITY.md "CRM request
+  // signing" and the Unicode test vectors in API_CONTRACT.md.
+  var bytes = Utilities.computeHmacSha256Signature(message, secret, Utilities.Charset.UTF_8);
   return bytes
     .map(function (b) {
       var v = (b < 0 ? b + 256 : b).toString(16);
