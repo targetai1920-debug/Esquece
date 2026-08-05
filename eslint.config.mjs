@@ -19,6 +19,12 @@ const eslintConfig = defineConfig([
     // web-reservas' source (and, when present, its build output) using
     // this project's dependency versions instead of its own.
     "web-reservas/**",
+    // Same reasoning for templates/barbershop-booking/ (its own Next.js
+    // project, own tsconfig/eslint/package.json — see
+    // .claude/skills/barbershop-crm-builder/) and generated/ (every
+    // factory/create-client.mjs output, each its own independent project).
+    "templates/**",
+    "generated/**",
   ]),
 ]);
 

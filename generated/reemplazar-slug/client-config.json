@@ -1,0 +1,144 @@
+{
+  "business": {
+    "name": "REEMPLAZAR_NOMBRE_DE_LA_BARBERIA",
+    "slug": "reemplazar-slug",
+    "country": "REEMPLAZAR_PAIS",
+    "city": "REEMPLAZAR_CIUDAD",
+    "timezone": "REEMPLAZAR_ZONA_HORARIA",
+    "locale": "REEMPLAZAR_LOCALE",
+    "currency": "REEMPLAZAR_MONEDA",
+    "address": "REEMPLAZAR_DIRECCION",
+    "phone": "REEMPLAZAR_TELEFONO",
+    "email": "REEMPLAZAR_EMAIL",
+    "instagram": "REEMPLAZAR_INSTAGRAM",
+    "mapsUrl": "REEMPLAZAR_MAPS_URL"
+  },
+  "branding": {
+    "logo": "REEMPLAZAR_RUTA_DEL_LOGO",
+    "primaryColor": "REEMPLAZAR_COLOR_PRINCIPAL",
+    "secondaryColor": "REEMPLAZAR_COLOR_SECUNDARIO",
+    "backgroundColor": "REEMPLAZAR_COLOR_DE_FONDO",
+    "headingFont": "",
+    "bodyFont": "",
+    "visualPreset": "urban",
+    "styleDescription": "REEMPLAZAR_DESCRIPCION_DEL_ESTILO"
+  },
+  "booking": {
+    "flowOrder": [
+      "service",
+      "staff",
+      "datetime",
+      "customer",
+      "confirmation"
+    ],
+    "minimumNoticeMinutes": 60,
+    "maximumAdvanceDays": 90,
+    "slotIntervalMinutes": 15,
+    "allowAnyStaff": true,
+    "cancellationNoticeHours": 24,
+    "customerFields": {
+      "name": true,
+      "phone": true,
+      "email": true,
+      "notes": true
+    }
+  },
+  "services": [
+    {
+      "id": "classic-cut",
+      "name": "Corte clásico",
+      "description": "Corte de cabello personalizado.",
+      "price": 0,
+      "durationMinutes": 45,
+      "bufferMinutes": 0,
+      "active": true,
+      "image": ""
+    },
+    {
+      "id": "beard-trim",
+      "name": "Arreglo de barba",
+      "description": "Perfilado y arreglo de barba.",
+      "price": 0,
+      "durationMinutes": 30,
+      "bufferMinutes": 0,
+      "active": true,
+      "image": ""
+    }
+  ],
+  "staff": [
+    {
+      "id": "barber-one",
+      "name": "REEMPLAZAR_NOMBRE_DEL_BARBERO",
+      "biography": "",
+      "photo": "",
+      "active": true,
+      "serviceIds": [
+        "classic-cut",
+        "beard-trim"
+      ],
+      "workingHours": {
+        "monday": {
+          "start": "09:00",
+          "end": "18:00"
+        },
+        "tuesday": {
+          "start": "09:00",
+          "end": "18:00"
+        },
+        "wednesday": {
+          "start": "09:00",
+          "end": "18:00"
+        },
+        "thursday": {
+          "start": "09:00",
+          "end": "18:00"
+        },
+        "friday": {
+          "start": "09:00",
+          "end": "18:00"
+        },
+        "saturday": {
+          "start": "09:00",
+          "end": "16:00"
+        },
+        "sunday": {
+          "closed": true
+        }
+      },
+      "breaks": [
+        {
+          "days": [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday"
+          ],
+          "start": "13:00",
+          "end": "14:00"
+        }
+      ]
+    }
+  ],
+  "content": {
+    "heroTitle": "REEMPLAZAR_TITULO_PRINCIPAL",
+    "heroSubtitle": "REEMPLAZAR_SUBTITULO",
+    "aboutTitle": "Sobre nosotros",
+    "aboutText": "REEMPLAZAR_DESCRIPCION_REAL",
+    "bookingTitle": "Reserva tu cita",
+    "confirmationMessage": "Tu reserva fue registrada correctamente.",
+    "cancellationPolicy": "REEMPLAZAR_POLITICA_DE_CANCELACION",
+    "footerText": ""
+  },
+  "features": {
+    "publicBookingWebsite": true,
+    "adminDashboard": true,
+    "whatsapp": false,
+    "aiAssistant": false,
+    "reminders": false,
+    "googleCalendar": false,
+    "emailNotifications": true,
+    "promotions": true,
+    "faqs": true
+  }
+}
