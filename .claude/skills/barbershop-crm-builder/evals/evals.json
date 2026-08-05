@@ -1,0 +1,71 @@
+{
+  "skill": "barbershop-crm-builder",
+  "description": "Realistic evaluation scenarios for the barbershop-crm-builder skill. Each scenario has a prompt, expected behaviors (success criteria) and explicit failure signals that indicate the skill was not followed.",
+  "evaluations": [
+    {
+      "id": "eval-1-greenfield-small-barbershop",
+      "reference_example": "examples/greenfield-small-barbershop.md",
+      "prompt": "Build a booking website for a small barbershop with three barbers, a handful of services, and Google Sheets as the CRM.",
+      "success_criteria": [
+        "Gathers or explicitly marks pending real business data (name, address, timezone, currency, prices, hours, staff) instead of inventing plausible values.",
+        "Records an explicit architecture decision (spreadsheet-backed CRM) with stated reasoning, not a silent default.",
+        "Writes availability rules in prose before implementing them.",
+        "Designs a CRM schema with snapshotting on appointments and idempotent setup.",
+        "Implements the availability engine as read-only and the confirmation path as a locked, re-validated mutation.",
+        "The booking website calls only this project's own backend API, never the CRM/spreadsheet backend directly.",
+        "Includes a concurrency test proving two simultaneous bookings for the same slot cannot both succeed.",
+        "Final report distinguishes implemented / verified-with-mocks / verified-locally / verified-against-real-service honestly."
+      ],
+      "failure_signals": [
+        "Invents a plausible-looking price list, hours, or barber bios and presents them as real business data.",
+        "Frontend code calls a spreadsheet or CRM API directly instead of a backend layer.",
+        "No test exercises concurrent booking attempts for the identical slot.",
+        "Claims the booking flow is 'production-verified' without ever calling a real deployed CRM backend.",
+        "Ships a static/demo booking form with no real availability engine behind it."
+      ]
+    },
+    {
+      "id": "eval-2-existing-website-crm-integration",
+      "reference_example": "examples/existing-website-crm-integration.md",
+      "prompt": "We already have a nice-looking website with a booking page, but the booking flow is simulated. Connect it to a real backend/CRM.",
+      "success_criteria": [
+        "Preserves the existing visual design instead of rebuilding it.",
+        "Audits the current simulated flow before writing integration code.",
+        "Introduces (or reuses) a backend API layer; the frontend never calls the CRM/spreadsheet backend directly.",
+        "Replaces hardcoded services/staff/slots with real API-sourced data.",
+        "Adds loading/empty/error states that the simulated version never needed.",
+        "Adds a client-generated idempotency key to the real booking submission.",
+        "Handles SLOT_UNAVAILABLE by returning to the date/time step and preserving already-entered customer data.",
+        "Does not rewrite unrelated parts of the website that already worked."
+      ],
+      "failure_signals": [
+        "Rebuilds the site's visual design or copy without being asked to.",
+        "Leaves the frontend calling the CRM/spreadsheet backend directly, citing 'it already worked that way'.",
+        "No idempotency key on the real appointment-creation call.",
+        "SLOT_UNAVAILABLE is unhandled or clears the customer's already-entered data.",
+        "Hardcoded demo services/staff/slots remain in the shipped frontend after the change."
+      ]
+    },
+    {
+      "id": "eval-3-multi-channel-concurrency-and-ai-boundary",
+      "reference_example": "examples/acceptance-test-checklist.md",
+      "prompt": "We want a booking website, an admin panel, and a WhatsApp channel, all for the same barbershop, and we're worried about double-booking across channels.",
+      "success_criteria": [
+        "All three channels call the same CrmClient-shaped interface; no channel has its own availability logic.",
+        "Chat-channel webhook event deduplication is atomic (lock/transaction-guarded), not check-then-insert.",
+        "Every mutation, regardless of triggering channel, acquires a lock/transaction and re-validates before writing.",
+        "A cross-channel test proves a booking made via one channel is immediately unavailable via the other two.",
+        "A cross-channel test races two channels for the identical slot and asserts exactly one booking survives, with a graceful recovery for the loser.",
+        "Human handoff suspends automated replies but keeps recording inbound messages, and only reactivates manually.",
+        "The AI layer never creates/cancels/reschedules a booking directly — it only proposes an interpretation that goes through the same validated mutation path."
+      ],
+      "failure_signals": [
+        "Each channel has its own booking/availability logic that happens to look similar.",
+        "Webhook dedup is a separate check-then-insert with no lock/transaction, allowing a race.",
+        "No test actually races two channels against the identical slot.",
+        "Automated replies continue to send while a human handoff is active.",
+        "Any code path lets the AI provider's output write an appointment without going through the same validated mutation call every other channel uses."
+      ]
+    }
+  ]
+}
