@@ -1,0 +1,298 @@
+#!/usr/bin/env node
+// Prepares (never deploys) everything needed to initialize a new
+// barbershop's persistent CRM (Google Sheets + Apps Script) from its YAML
+// config — see §4 of the factory continuation brief and
+// .claude/skills/barbershop-crm-builder/references/crm-data-model.md.
+//
+// Usage (via `npm run prepare-crm --`, which supplies the tsx loader):
+//   node --import tsx/esm factory/prepare-crm.mjs --config ./clients/<slug>.yaml [--output ./crm-init/<slug>]
+//
+// This script CANNOT create a Google Sheet, deploy an Apps Script project,
+// or set Script Properties — those require an authenticated Google session
+// this environment does not have. Instead it generates every file an
+// operator needs and reduces their manual work to the exact steps listed
+// in APPS_SCRIPT_CONNECT_GUIDE.md, ending with a real health-check call —
+// the CRM is never declared "connected" here, only "prepared."
+//
+// Validation is not reimplemented — see factory/create-client.mjs's header
+// comment for why this imports the same validator from the template.
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { parse as parseYaml } from "yaml";
+import { validateClientConfig } from "../templates/barbershop-booking/src/config/validate.ts";
+
+const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(THIS_DIR, "..");
+
+function parseArgs(argv) {
+  const args = { config: null, output: null };
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--config") args.config = argv[++i];
+    else if (argv[i] === "--output") args.output = argv[++i];
+  }
+  return args;
+}
+
+function buildSeedFromConfig(config) {
+  const settings = [
+    { key: "businessName", value: config.business.name, type: "string" },
+    { key: "timezone", value: config.business.timezone, type: "string" },
+    { key: "locale", value: config.business.locale, type: "string" },
+    { key: "currency", value: config.business.currency, type: "string" },
+    { key: "address", value: config.business.address, type: "string" },
+    { key: "phone", value: config.business.phone, type: "string" },
+    { key: "email", value: config.business.email, type: "string" },
+    { key: "instagram", value: config.business.instagram, type: "string" },
+    { key: "mapsUrl", value: config.business.mapsUrl, type: "string" },
+    { key: "minimumNoticeMinutes", value: String(config.booking.minimumNoticeMinutes), type: "number" },
+    { key: "maximumAdvanceDays", value: String(config.booking.maximumAdvanceDays), type: "number" },
+    { key: "slotIntervalMinutes", value: String(config.booking.slotIntervalMinutes), type: "number" },
+    { key: "allowAnyStaff", value: String(config.booking.allowAnyStaff), type: "boolean" },
+    { key: "cancellationNoticeHours", value: String(config.booking.cancellationNoticeHours), type: "number" },
+    { key: "cancellationPolicy", value: config.content.cancellationPolicy, type: "string" },
+  ];
+
+  const services = config.services.map((s) => ({
+    serviceId: s.id,
+    name: s.name,
+    description: s.description,
+    price: s.price,
+    currency: config.business.currency,
+    durationMinutes: s.durationMinutes,
+    bufferMinutes: s.bufferMinutes,
+    active: s.active,
+    image: s.image,
+  }));
+
+  const staff = config.staff.map((m) => ({
+    staffId: m.id,
+    name: m.name,
+    biography: m.biography,
+    photoUrl: m.photo,
+    active: m.active,
+    publicBooking: true,
+  }));
+
+  const staffServices = config.staff.flatMap((m) => m.serviceIds.map((serviceId) => ({ staffId: m.id, serviceId, active: true })));
+
+  const workingHours = config.staff.flatMap((m) =>
+    Object.entries(m.workingHours)
+      .filter(([, day]) => !day.closed && day.start && day.end)
+      .map(([dayOfWeek, day]) => ({ staffId: m.id, dayOfWeek, openingTime: day.start, closingTime: day.end })),
+  );
+
+  const breaks = config.staff.flatMap((m) =>
+    (m.breaks ?? []).flatMap((b) => b.days.map((dayOfWeek) => ({ staffId: m.id, dayOfWeek, startTime: b.start, endTime: b.end }))),
+  );
+
+  return { settings, services, staff, staffServices, workingHours, breaks };
+}
+
+function buildImportSeedScript(config) {
+  // Deliberately a standalone script with its OWN inline copy of the
+  // signing algorithm (Node crypto only — no dependency on this repo's
+  // tooling or tsx) so an operator can run it with nothing but `node` once
+  // the Web App is deployed. This is the one intentional second
+  // implementation of the signing algorithm in this codebase, alongside
+  // Security.gs's Apps Script version — parity between the two is proven
+  // by shared hardcoded test vectors (see src/lib/crm/signing.ts and
+  // apps-script/Tests.gs's "computeHmacHex matches Node-generated
+  // Vector *" tests), not by sharing code across the Node/Apps Script
+  // runtime boundary, which isn't possible.
+  return `#!/usr/bin/env node
+// Generated by factory/prepare-crm.mjs for ${config.business.slug} — imports
+// seed.json into the deployed Apps Script CRM, then verifies with a real
+// health check. Run once after completing every step in
+// APPS_SCRIPT_CONNECT_GUIDE.md. Safe to re-run: importSeed is idempotent
+// (only fills in missing rows, never overwrites an edited one).
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+
+const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
+const seed = JSON.parse(fs.readFileSync(path.join(THIS_DIR, "seed.json"), "utf8"));
+
+const webAppUrl = process.env.${config.crm.webAppUrlEnv};
+const apiKey = process.env.${config.crm.apiKeyEnv};
+const signingSecret = process.env.${config.crm.signingSecretEnv};
+
+if (!webAppUrl || !apiKey || !signingSecret) {
+  console.error("Faltan variables de entorno. Define ${config.crm.webAppUrlEnv}, ${config.crm.apiKeyEnv} y ${config.crm.signingSecretEnv} antes de ejecutar este script.");
+  process.exit(1);
+}
+
+function stableStringify(value) {
+  if (value === null) return "null";
+  const t = typeof value;
+  if (t === "number") return JSON.stringify(value);
+  if (t === "string" || t === "boolean") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(stableStringify).join(",") + "]";
+  if (t === "object") {
+    const keys = Object.keys(value).sort();
+    return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(value[k])).join(",") + "}";
+  }
+  throw new Error("Unsupported value type: " + t);
+}
+
+function buildSignedRequest(action, payload) {
+  const base = {
+    version: "1",
+    timestamp: Date.now(),
+    nonce: crypto.randomUUID(),
+    requestId: crypto.randomUUID(),
+    action,
+    payload: payload ?? null,
+  };
+  const canonical = [base.version, String(base.timestamp), base.nonce, base.requestId, base.action, stableStringify(base.payload)].join("\\n");
+  const signature = crypto.createHmac("sha256", signingSecret).update(canonical, "utf8").digest("hex");
+  return { ...base, apiKey, signature };
+}
+
+async function callAction(action, payload) {
+  const response = await fetch(webAppUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(buildSignedRequest(action, payload)),
+  });
+  const body = await response.json();
+  if (!body.ok) throw new Error(action + " failed: " + (body.error ? body.error.code + " — " + body.error.message : "unknown error"));
+  return body.data;
+}
+
+async function main() {
+  console.log("Importando datos iniciales (importSeed)...");
+  const summary = await callAction("importSeed", seed);
+  console.log(JSON.stringify(summary, null, 2));
+
+  console.log("\\nVerificando conexión con un health check real (health)...");
+  const health = await callAction("health", {});
+  if (health.status !== "live") {
+    console.error("El CRM respondió pero no reporta status \\"live\\": " + JSON.stringify(health));
+    process.exit(1);
+  }
+  console.log("OK — CRM conectado y respondiendo. schemaVersion=" + health.schemaVersion);
+  console.log("\\nAhora sí puedes considerar el CRM de este cliente conectado.");
+}
+
+main().catch((err) => {
+  console.error(err.message || err);
+  process.exit(1);
+});
+`;
+}
+
+function buildConnectGuide(config, outputDirName) {
+  const slug = config.business.slug;
+  const lines = [];
+  lines.push(`# Guía de conexión — Google Sheets + Apps Script (${config.business.name})`);
+  lines.push("");
+  lines.push("Estos son los pasos humanos exactos y mínimos para conectar el CRM persistente de este cliente. Ningún paso de este documento fue ejecutado automáticamente — Google requiere una sesión autenticada de una persona con acceso a la cuenta correspondiente.");
+  lines.push("");
+  lines.push("## 1. Crear la hoja de cálculo");
+  lines.push("1. Crea una hoja de cálculo nueva en Google Sheets, vacía, dedicada a este cliente (no reutilices la hoja de otro cliente).");
+  lines.push("2. Copia el ID de la hoja desde su URL (`https://docs.google.com/spreadsheets/d/<ID>/edit`).");
+  lines.push("");
+  lines.push("## 2. Crear el proyecto de Apps Script");
+  lines.push("1. Desde la hoja: Extensiones → Apps Script.");
+  lines.push(`2. Copia el contenido de cada archivo \`.gs\` en \`generated/${slug}/apps-script/\` (o \`templates/barbershop-booking/apps-script/\` si generaste el proyecto en otra carpeta) al editor de Apps Script — un archivo por archivo, mismo nombre.`);
+  lines.push("3. Copia también `appsscript.json` (Configuración del proyecto → \"Mostrar archivo appsscript.json\").");
+  lines.push("4. Guarda el proyecto.");
+  lines.push("");
+  lines.push("## 3. Configurar Script Properties");
+  lines.push("En el editor de Apps Script: Configuración del proyecto (ícono de engranaje) → Propiedades del script → Añadir propiedad del script. Añade estas tres:");
+  lines.push("");
+  lines.push("| Propiedad | Valor |");
+  lines.push("|---|---|");
+  lines.push("| `CRM_API_KEY` | un valor aleatorio nuevo, generado solo para este cliente (no reutilices el de otro cliente) |");
+  lines.push("| `CRM_SIGNING_SECRET` | otro valor aleatorio nuevo, distinto del anterior |");
+  lines.push("| `CRM_SPREADSHEET_ID` | el ID de la hoja copiado en el paso 1 |");
+  lines.push("");
+  lines.push("Anota estos tres valores — los necesitarás en el paso 6 para las variables de entorno de la aplicación, y Google no te dejará volver a leerlos después.");
+  lines.push("");
+  lines.push("## 4. Inicializar la estructura de hojas");
+  lines.push("1. En el editor de Apps Script, selecciona la función `setupCRM` en el desplegable de funciones.");
+  lines.push("2. Haz clic en \"Ejecutar\". Autoriza los permisos solicitados la primera vez.");
+  lines.push("3. Confirma que se crearon las pestañas (SETTINGS, SERVICES, STAFF, STAFF_SERVICES, WORKING_HOURS, BREAKS, TIME_OFF, BLOCKED_SLOTS, CUSTOMERS, APPOINTMENTS, FAQS, PROMOTIONS, AUDIT_LOG) en la hoja de cálculo.");
+  lines.push("");
+  lines.push("## 5. Publicar como Web App");
+  lines.push("1. Implementar → Nueva implementación → tipo \"Aplicación web\".");
+  lines.push("2. \"Ejecutar como\": tu cuenta. \"Quién tiene acceso\": Cualquier usuario.");
+  lines.push("3. Implementar, y copia la URL de la aplicación web resultante.");
+  lines.push("");
+  lines.push("## 6. Configurar las variables de entorno de la aplicación");
+  lines.push(`En el hosting de la aplicación Next.js (o en \`.env.local\` para pruebas locales), define:`);
+  lines.push("");
+  lines.push("| Variable | Valor |");
+  lines.push("|---|---|");
+  lines.push(`| \`${config.crm.webAppUrlEnv}\` | la URL de la implementación del paso 5 |`);
+  lines.push(`| \`${config.crm.apiKeyEnv}\` | el mismo valor de \`CRM_API_KEY\` del paso 3 |`);
+  lines.push(`| \`${config.crm.signingSecretEnv}\` | el mismo valor de \`CRM_SIGNING_SECRET\` del paso 3 |`);
+  lines.push("");
+  lines.push("## 7. Cargar los datos iniciales y verificar la conexión");
+  lines.push("Con las tres variables anteriores exportadas en tu terminal (o en un `.env` que cargues antes), ejecuta:");
+  lines.push("");
+  lines.push("```bash");
+  lines.push(`${config.crm.webAppUrlEnv}=... ${config.crm.apiKeyEnv}=... ${config.crm.signingSecretEnv}=... node ${outputDirName}/run-import-seed.mjs`);
+  lines.push("```");
+  lines.push("");
+  lines.push("Este script llama a la acción `importSeed` (carga servicios, personal, relaciones servicio-trabajador, horarios, descansos y la configuración del negocio desde `seed.json` — es seguro volver a ejecutarlo, no duplica datos) y luego llama a `health` para confirmar una respuesta real del CRM desplegado.");
+  lines.push("");
+  lines.push("**No consideres el CRM conectado hasta que este script termine mostrando `OK — CRM conectado y respondiendo.`** — ni antes, ni por haber completado los pasos anteriores sin ese resultado.");
+  lines.push("");
+  lines.push("## Después de conectar");
+  lines.push("- FAQs y promociones no se cargan desde el YAML (el esquema de configuración no las modela todavía) — añádelas directamente en las pestañas `FAQS` y `PROMOTIONS` de la hoja, o desde el panel administrativo una vez que ese soporte exista.");
+  lines.push("- Día a día, usa el panel administrativo de la aplicación (`/admin`) — no edites la hoja de cálculo directamente salvo para lo anterior, para evitar saltarte las validaciones y el registro de auditoría.");
+  lines.push("");
+  return lines.join("\n");
+}
+
+function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (!args.config) {
+    console.error("Uso: node factory/prepare-crm.mjs --config <ruta.yaml> [--output <carpeta-destino>]");
+    process.exit(1);
+  }
+
+  const configPath = path.resolve(args.config);
+  if (!fs.existsSync(configPath)) {
+    console.error(`No se encontró el archivo de configuración: ${configPath}`);
+    process.exit(1);
+  }
+  const configDir = path.dirname(configPath);
+  const raw = parseYaml(fs.readFileSync(configPath, "utf8"));
+  const result = validateClientConfig(raw, { assetsBaseDir: configDir, fs });
+
+  console.log(`\n=== Validando ${path.relative(REPO_ROOT, configPath)} ===`);
+  if (!result.ok) {
+    console.log(`\n${result.errors.length} error(es) — no se puede preparar el CRM:`);
+    for (const e of result.errors) console.log(`  - [${e.path}] ${e.message}`);
+    process.exit(1);
+  }
+  console.log("Configuración válida.");
+
+  const config = result.config;
+  if (config.crm.provider !== "google-sheets-apps-script") {
+    console.log(`\ncrm.provider es "${config.crm.provider}" — no requiere inicialización de CRM persistente. (LocalCrmClient se autoinicializa en memoria desde client-config.json en cada arranque; no genera archivos.)`);
+    return;
+  }
+
+  const outputDir = path.resolve(args.output || path.join(REPO_ROOT, "crm-init", config.business.slug));
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const seed = buildSeedFromConfig(config);
+  fs.writeFileSync(path.join(outputDir, "seed.json"), JSON.stringify(seed, null, 2) + "\n");
+
+  const outputDirName = path.relative(REPO_ROOT, outputDir);
+  fs.writeFileSync(path.join(outputDir, "run-import-seed.mjs"), buildImportSeedScript(config));
+  fs.writeFileSync(path.join(outputDir, "APPS_SCRIPT_CONNECT_GUIDE.md"), buildConnectGuide(config, outputDirName));
+
+  console.log(`\n=== CRM preparado: ${outputDirName} ===`);
+  console.log(`- seed.json: ${seed.services.length} servicio(s), ${seed.staff.length} trabajador(es), ${seed.staffServices.length} relación(es) servicio-trabajador, ${seed.workingHours.length} horario(s), ${seed.breaks.length} descanso(s).`);
+  console.log(`- run-import-seed.mjs: script para cargar seed.json contra el Web App desplegado y verificar con un health check real.`);
+  console.log(`- APPS_SCRIPT_CONNECT_GUIDE.md: pasos humanos exactos para desplegar Google Sheets + Apps Script.`);
+  console.log(`\nEl CRM NO está conectado todavía. Sigue APPS_SCRIPT_CONNECT_GUIDE.md hasta el final — el script run-import-seed.mjs solo declara éxito tras un health check real.`);
+}
+
+main();

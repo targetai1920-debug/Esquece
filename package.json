@@ -11,14 +11,15 @@
     "test": "vitest run",
     "test:apps-script": "node apps-script/tests/run-tests.mjs",
     "hash-password": "node scripts/hash-password.mjs",
-    "create-client": "node factory/create-client.mjs",
+    "create-client": "node --import tsx/esm factory/create-client.mjs",
+    "prepare-crm": "node --import tsx/esm factory/prepare-crm.mjs",
     "scan-contamination": "node factory/scan-contamination.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.4",
     "bcryptjs": "^3.0.3",
     "jose": "^6.2.3",
-    "next": "16.2.12",
+    "next": "^16.3.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "server-only": "^0.0.1",
@@ -31,8 +32,9 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.12",
+    "eslint-config-next": "^16.3.0",
     "tailwindcss": "^4",
+    "tsx": "^4",
     "typescript": "^5",
     "vitest": "^3",
     "yaml": "^2"

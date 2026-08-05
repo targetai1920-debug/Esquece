@@ -4,6 +4,7 @@ import { __resetCrmClientForTests } from "@/lib/crm/factory";
 import { clientConfigSchema } from "@/config/schema";
 import { GET as getServices } from "@/app/api/public/services/route";
 import { GET as getStaff } from "@/app/api/public/staff/route";
+import { GET as getSettings } from "@/app/api/public/settings/route";
 import { POST as postAvailability } from "@/app/api/public/availability/route";
 import { POST as postAppointment } from "@/app/api/public/appointments/route";
 
@@ -124,5 +125,15 @@ describe("public API route handlers", () => {
     const body = await second.json();
     expect(second.status).toBe(409);
     expect(body.error.code).toBe("SLOT_UNAVAILABLE");
+  });
+
+  it("GET /api/public/settings never exposes CRM credentials or credential env var names", async () => {
+    const response = await getSettings();
+    const body = await response.json();
+    expect(body.ok).toBe(true);
+    const serialized = JSON.stringify(body).toLowerCase();
+    for (const forbidden of ["apikey", "signingsecret", "webappurl", "crm_api_key", "crm_signing_secret", "crm_web_app_url"]) {
+      expect(serialized).not.toContain(forbidden);
+    }
   });
 });

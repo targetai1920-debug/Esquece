@@ -18,10 +18,13 @@ import YAML from "yaml";
  *    here — a full npm ci + build cycle per test case would make the fast
  *    unit suite impractically slow and would require network access from
  *    every CI run of `npm test`. Exercised instead as a real, one-time,
- *    manual generation + full validation (see the repo root
- *    generated/reemplazar-slug/ project and the task's final report for its
- *    actual lint/typecheck/test/build results). This is a deliberate,
- *    documented scope decision, not a gap presented as tested.
+ *    manual generation + full validation against a fictitious client
+ *    config (clients/faro-digital-test.yaml, generated to a gitignored
+ *    ./generated/ or a temp directory — see docs/OPERATOR_GUIDE.md §12 for
+ *    why a generated project is never committed to this repo) — see the
+ *    task's final report for its actual lint/typecheck/test/build results.
+ *    This is a deliberate, documented scope decision, not a gap presented
+ *    as tested.
  *  19-23 (configurable flow, CRM init, availability/double-booking, fresh
  *    signature per retry, Unicode HMAC vectors): these exercise the
  *    template's own engine, not the generator — already covered by
@@ -113,7 +116,10 @@ function writeConfig(dir: string, config: unknown): string {
 
 function runCli(args: string[]): { status: number; stdout: string; stderr: string } {
   try {
-    const stdout = execFileSync("node", [CLI, ...args], { encoding: "utf8" });
+    // --import tsx/esm: the CLI imports the template's real TypeScript
+    // validator directly (single source of truth — see factory/create-client.mjs's
+    // header comment), so it needs the same loader `npm run create-client` uses.
+    const stdout = execFileSync("node", ["--import", "tsx/esm", CLI, ...args], { encoding: "utf8", cwd: REPO_ROOT });
     return { status: 0, stdout, stderr: "" };
   } catch (err) {
     const e = err as { status: number; stdout: string; stderr: string };

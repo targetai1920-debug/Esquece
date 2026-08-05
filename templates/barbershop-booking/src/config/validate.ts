@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { clientConfigSchema, hexColorPattern, slugPattern, hhmmPattern, WEEKDAYS } from "./schema";
-import type { ClientConfig, FlowStep } from "./schema";
+import { clientConfigSchema, hexColorPattern, slugPattern, hhmmPattern, WEEKDAYS, FEATURE_STATUS } from "./schema";
+import type { ClientConfig, FlowStep, FeatureKey } from "./schema";
 
 /**
  * Two-tier validation, on purpose:
@@ -302,6 +302,44 @@ export function validateClientConfig(raw: unknown, options: ValidateOptions = {}
   // constraint that's load-bearing for the UI: confirmation is always the final step.
   if (config.booking.flowOrder[config.booking.flowOrder.length - 1] !== "confirmation" && missingSteps.length === 0) {
     errors.push({ path: "booking.flowOrder", message: `"confirmation" debe ser siempre el último paso del flujo de reservas.` });
+  }
+
+  // --- Production safety: no in-memory CRM in production --------------------
+  const isProduction = config.environment === "production";
+  if (isProduction && config.crm.provider === "local") {
+    errors.push({
+      path: "crm.provider",
+      message: `environment está configurado como "production", pero crm.provider utiliza almacenamiento local no persistente ("local"). Usa "google-sheets-apps-script" (o un backend persistente equivalente) para producción.`,
+    });
+  }
+
+  // --- Feature implementation status -----------------------------------------
+  // A boolean flag alone must never be read as "this feature actually
+  // works" — see references/optional-whatsapp-and-ai.md. "not-implemented"
+  // features are a harmless no-op outside production (warned), but block
+  // production entirely.
+  for (const key of Object.keys(FEATURE_STATUS) as FeatureKey[]) {
+    const enabled = config.features[key];
+    if (!enabled) continue;
+    const status = FEATURE_STATUS[key];
+    if (status === "not-implemented") {
+      if (isProduction) {
+        errors.push({
+          path: `features.${key}`,
+          message: `"features.${key}" está activado y environment es "production", pero este módulo todavía no está implementado en esta versión de la plantilla — no lo actives en producción. Ver .claude/skills/barbershop-crm-builder/references/optional-whatsapp-and-ai.md.`,
+        });
+      } else {
+        warnings.push({
+          path: `features.${key}`,
+          message: `"features.${key}" está activado, pero este módulo todavía no está implementado en esta versión de la plantilla — activarlo no tiene ningún efecto todavía (no bloquea porque environment no es "production").`,
+        });
+      }
+    } else if (status === "experimental" && isProduction) {
+      warnings.push({
+        path: `features.${key}`,
+        message: `"features.${key}" está activado en producción pero su implementación es experimental — revisar antes de depender de él para tráfico real.`,
+      });
+    }
   }
 
   return { ok: errors.length === 0, errors, warnings, config: errors.length === 0 ? config : null };

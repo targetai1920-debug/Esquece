@@ -43,3 +43,11 @@ next-env.d.ts
 
 # scratch
 *.local
+
+# factory output — a full generated client project is never committed to
+# this repo (see docs/OPERATOR_GUIDE.md §12: one independent repo per
+# client). Only the small placeholder fixture clients/reemplazar-slug.yaml
+# stays versioned.
+/generated/*
+!/generated/README.md
+/crm-init/

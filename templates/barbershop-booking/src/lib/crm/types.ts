@@ -27,6 +27,25 @@ export interface BusinessSettings {
   cancellationPolicy: string;
 }
 
+export interface TimeOff {
+  id: string;
+  staffId: string;
+  startDate: string;
+  endDate: string;
+  reason?: string;
+  active: boolean;
+}
+
+export interface BlockedSlot {
+  id: string;
+  staffId?: string; // absent/empty = business-wide block
+  localDate: string;
+  startTime: string;
+  endTime: string;
+  reason?: string;
+  active: boolean;
+}
+
 export interface Service {
   id: string;
   name: string;
@@ -191,6 +210,39 @@ export interface CrmClient {
   rescheduleAppointment(input: RescheduleInput): Promise<Appointment>;
 
   // Admin-facing, still routed through the exact same engine as any other caller.
+  // Every mutation here validates input, requires the caller to already be
+  // an authenticated admin (enforced at the API route layer, not here),
+  // and writes an audit-log entry — see
+  // .claude/skills/barbershop-crm-builder/references/admin-dashboard.md.
+  //
+  // adminListServices/adminListStaff are deliberately separate from
+  // listServices/listStaff (which filter to active/publicBooking-eligible
+  // only, for the public booking site) — the admin dashboard needs to see
+  // and re-activate an inactive service or staff member, which would be
+  // permanently unreachable through the public-filtered methods.
+  adminListServices(): Promise<Service[]>;
+  adminListStaff(): Promise<Staff[]>;
   listAppointments(filter?: { localDate?: string; staffId?: string; status?: AppointmentStatus }): Promise<Appointment[]>;
+  confirmAppointment(appointmentId: string): Promise<Appointment>;
+  completeAppointment(appointmentId: string): Promise<Appointment>;
+  markNoShow(appointmentId: string): Promise<Appointment>;
+  adminCancelAppointment(appointmentId: string, reason?: string): Promise<Appointment>;
+  adminRescheduleAppointment(appointmentId: string, newLocalDate: string, newLocalStartTime: string): Promise<Appointment>;
+
+  listBlockedSlots(): Promise<BlockedSlot[]>;
+  createBlockedSlot(input: { staffId?: string; localDate: string; startTime: string; endTime: string; reason?: string }): Promise<BlockedSlot>;
+  deleteBlockedSlot(id: string): Promise<void>;
+
+  listTimeOff(): Promise<TimeOff[]>;
+  createTimeOff(input: { staffId: string; startDate: string; endDate: string; reason?: string }): Promise<TimeOff>;
+  deleteTimeOff(id: string): Promise<void>;
+
+  adminSetServiceActive(serviceId: string, active: boolean): Promise<Service>;
+  adminSetServicePrice(serviceId: string, price: number): Promise<Service>;
+  adminSetStaffActive(staffId: string, active: boolean): Promise<Staff>;
+
   listAuditLog(): Promise<AuditEntry[]>;
+
+  /** Read-only connectivity check — see references/deployment-and-operations.md's health-check section. */
+  health(): Promise<{ status: "live"; schemaVersion: string }>;
 }

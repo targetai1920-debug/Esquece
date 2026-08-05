@@ -31,6 +31,31 @@ export type Weekday = (typeof WEEKDAYS)[number];
 export const FLOW_STEPS = ["service", "staff", "datetime", "customer", "confirmation"] as const;
 export type FlowStep = (typeof FLOW_STEPS)[number];
 
+export const ENVIRONMENTS = ["development", "staging", "production"] as const;
+export type Environment = (typeof ENVIRONMENTS)[number];
+
+export const CRM_PROVIDERS = ["local", "google-sheets-apps-script"] as const;
+export type CrmProvider = (typeof CRM_PROVIDERS)[number];
+
+// Feature implementation status, distinct from whether a client has it
+// enabled — see src/config/validate.ts and
+// .claude/skills/barbershop-crm-builder/references/optional-whatsapp-and-ai.md.
+// "not-implemented" features can be toggled on outside production (as a
+// harmless no-op, with a loud warning) but never in production — a boolean
+// flag alone must never be read as "this feature actually works."
+export const FEATURE_STATUS = {
+  publicBookingWebsite: "supported",
+  adminDashboard: "supported",
+  promotions: "supported",
+  faqs: "supported",
+  emailNotifications: "experimental",
+  whatsapp: "not-implemented",
+  aiAssistant: "not-implemented",
+  reminders: "not-implemented",
+  googleCalendar: "not-implemented",
+} as const;
+export type FeatureKey = keyof typeof FEATURE_STATUS;
+
 const businessSchema = z.object({
   name: z.string().min(1),
   slug: z.string().min(1),
@@ -139,7 +164,21 @@ const featuresSchema = z.object({
   faqs: z.boolean().default(false),
 });
 
+// The config never holds a real CRM credential — only the NAME of the
+// environment variable the running app should read it from at runtime
+// (defaults match .env.example). Values live exclusively in the
+// deployment's own environment/secret store. See
+// .claude/skills/barbershop-crm-builder/references/security-and-idempotency.md.
+const crmSchema = z.object({
+  provider: z.enum(CRM_PROVIDERS).default("local"),
+  webAppUrlEnv: z.string().min(1).default("CRM_WEB_APP_URL"),
+  apiKeyEnv: z.string().min(1).default("CRM_API_KEY"),
+  signingSecretEnv: z.string().min(1).default("CRM_SIGNING_SECRET"),
+  requestTimeoutMs: z.number().int().positive().default(12000),
+});
+
 export const clientConfigSchema = z.object({
+  environment: z.enum(ENVIRONMENTS).default("development"),
   business: businessSchema,
   branding: brandingSchema,
   booking: bookingSchema,
@@ -147,6 +186,13 @@ export const clientConfigSchema = z.object({
   staff: z.array(staffSchema),
   content: contentSchema,
   features: featuresSchema,
+  crm: crmSchema.default({
+    provider: "local",
+    webAppUrlEnv: "CRM_WEB_APP_URL",
+    apiKeyEnv: "CRM_API_KEY",
+    signingSecretEnv: "CRM_SIGNING_SECRET",
+    requestTimeoutMs: 12000,
+  }),
 });
 
 export type ClientConfig = z.infer<typeof clientConfigSchema>;

@@ -26,7 +26,14 @@ const SUSPICIOUS_PATTERNS = [
   { name: "hardcoded America/La_Paz timezone", re: /America\/La_Paz/ },
   { name: "hardcoded BOB currency", re: /\bBOB\b/ },
   { name: "hardcoded +591 phone prefix", re: /\+591\b/ },
-  { name: "possible secret assignment with a real-looking value", re: /(api[_-]?key|secret|token|password)\s*[:=]\s*["']?[A-Za-z0-9_\-]{20,}["']?/i },
+  // The `(?![A-Za-z0-9_\-])` pins the match to the identifier's real end
+  // (without it, greedy-then-backtrack could shave one char off and dodge
+  // the next lookahead); the trailing negative lookahead then excludes an
+  // assignment whose value is a function CALL (e.g.
+  // `var managementToken = generateManagementToken_();` in
+  // apps-script/Appointments.gs) — a generated-at-runtime value, not a
+  // leaked literal. A real secret is never immediately followed by `(`.
+  { name: "possible secret assignment with a real-looking value", re: /(api[_-]?key|secret|token|password)\s*[:=]\s*["']?[A-Za-z0-9_\-]{20,}(?![A-Za-z0-9_\-])["']?(?!\s*\()/i },
   { name: "possible private key block", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
 ];
 

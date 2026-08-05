@@ -1,0 +1,184 @@
+# Fictitious client used ONLY for factory verification (§10 of the
+# barbershop-factory commercial-readiness task). No relation to any real
+# client — fictitious name, .test domain (RFC 2606 reserved, never
+# resolvable), placeholder assets. Safe to generate, install, build, and
+# run through a full persistence test without touching any real business
+# or any real Google Sheets/Apps Script deployment.
+
+environment: staging
+
+business:
+  name: "Barbería Faro Digital"
+  slug: "faro-digital-test"
+  country: "País de Prueba"
+  city: "Ciudad de Prueba"
+  timezone: "America/Argentina/Buenos_Aires"
+  locale: "es-AR"
+  currency: "ARS"
+  address: "Av. Ficticia 123, Ciudad de Prueba"
+  phone: "+5493410000000"
+  email: "contacto@faro-digital.test"
+  instagram: "https://instagram.com/farodigital.test"
+  mapsUrl: "https://maps.example.test/faro-digital"
+
+branding:
+  logo: ""
+  primaryColor: "#1F2A44"
+  secondaryColor: "#C9A24B"
+  backgroundColor: "#FFFFFF"
+  headingFont: ""
+  bodyFont: ""
+  visualPreset: "urban"
+  styleDescription: "Estilo urbano, minimalista, tonos oscuros con acentos dorados."
+
+booking:
+  flowOrder:
+    - service
+    - staff
+    - datetime
+    - customer
+    - confirmation
+  minimumNoticeMinutes: 60
+  maximumAdvanceDays: 60
+  slotIntervalMinutes: 15
+  allowAnyStaff: true
+  cancellationNoticeHours: 24
+  customerFields:
+    name: true
+    phone: true
+    email: false
+    notes: true
+
+services:
+  - id: "corte-clasico"
+    name: "Corte clásico"
+    description: "Corte de cabello a tijera y máquina, incluye lavado."
+    price: 4500
+    durationMinutes: 45
+    bufferMinutes: 5
+    active: true
+    image: ""
+
+  - id: "arreglo-barba"
+    name: "Arreglo de barba"
+    description: "Perfilado y arreglo de barba con navaja."
+    price: 3000
+    durationMinutes: 30
+    bufferMinutes: 5
+    active: true
+    image: ""
+
+  - id: "coloracion"
+    name: "Coloración"
+    description: "Coloración completa o de canas."
+    price: 8000
+    durationMinutes: 90
+    bufferMinutes: 10
+    active: true
+    image: ""
+
+staff:
+  - id: "mateo-rivas"
+    name: "Mateo Rivas"
+    biography: "Especialista en cortes clásicos y arreglo de barba."
+    photo: ""
+    active: true
+    serviceIds:
+      - "corte-clasico"
+      - "arreglo-barba"
+    workingHours:
+      monday:
+        start: "09:00"
+        end: "18:00"
+      tuesday:
+        start: "09:00"
+        end: "18:00"
+      wednesday:
+        start: "09:00"
+        end: "18:00"
+      thursday:
+        start: "09:00"
+        end: "18:00"
+      friday:
+        start: "09:00"
+        end: "18:00"
+      saturday:
+        start: "09:00"
+        end: "14:00"
+      sunday:
+        closed: true
+    breaks:
+      - days:
+          - monday
+          - tuesday
+          - wednesday
+          - thursday
+          - friday
+        start: "13:00"
+        end: "14:00"
+
+  - id: "sofia-leon"
+    name: "Sofía León"
+    biography: "Especialista en coloración y cortes modernos."
+    photo: ""
+    active: true
+    serviceIds:
+      - "corte-clasico"
+      - "coloracion"
+    workingHours:
+      monday:
+        closed: true
+      tuesday:
+        start: "10:00"
+        end: "19:00"
+      wednesday:
+        start: "10:00"
+        end: "19:00"
+      thursday:
+        start: "10:00"
+        end: "19:00"
+      friday:
+        start: "10:00"
+        end: "19:00"
+      saturday:
+        start: "10:00"
+        end: "16:00"
+      sunday:
+        start: "11:00"
+        end: "15:00"
+    breaks:
+      - days:
+          - tuesday
+          - wednesday
+          - thursday
+          - friday
+        start: "14:00"
+        end: "15:00"
+
+content:
+  heroTitle: "Reservá tu turno en Barbería Faro Digital"
+  heroSubtitle: "Cortes clásicos, arreglo de barba y coloración."
+  aboutTitle: "Sobre nosotros"
+  aboutText: "Barbería ficticia usada exclusivamente para verificar la fábrica de sitios de reservas — no representa un negocio real."
+  bookingTitle: "Reservá tu cita"
+  confirmationMessage: "Tu reserva fue registrada correctamente."
+  cancellationPolicy: "Podés cancelar o reprogramar tu turno hasta 24 horas antes sin cargo."
+  footerText: "Barbería Faro Digital — datos de prueba, sin relación con ningún negocio real."
+
+features:
+  publicBookingWebsite: true
+  adminDashboard: true
+  whatsapp: false
+  aiAssistant: false
+  reminders: false
+  googleCalendar: false
+  emailNotifications: false
+  promotions: false
+  faqs: false
+
+crm:
+  provider: google-sheets-apps-script
+  webAppUrlEnv: FARO_DIGITAL_CRM_WEB_APP_URL
+  apiKeyEnv: FARO_DIGITAL_CRM_API_KEY
+  signingSecretEnv: FARO_DIGITAL_CRM_SIGNING_SECRET
+  requestTimeoutMs: 12000

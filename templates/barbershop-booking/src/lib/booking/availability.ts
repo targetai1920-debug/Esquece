@@ -1,4 +1,4 @@
-import type { Appointment, AvailableSlot, BusinessSettings, Service, Staff, WorkingDay } from "../crm/types";
+import type { Appointment, AvailableSlot, BlockedSlot, BusinessSettings, Service, Staff, TimeOff, WorkingDay } from "../crm/types";
 import { BLOCKING_STATUSES } from "../crm/types";
 
 /**
@@ -57,6 +57,8 @@ export interface AvailabilityContext {
   services: Service[];
   staff: Staff[];
   appointments: Appointment[];
+  timeOff: TimeOff[];
+  blockedSlots: BlockedSlot[];
   /** Business-local "now", as an ISO-ish sortable string "YYYY-MM-DDTHH:mm". */
   nowLocal: string;
 }
@@ -110,6 +112,22 @@ export function checkSlotValidity(
     if (!brk.days.includes(weekday)) continue;
     if (intervalsOverlap(start, end, minutesOf(brk.start), minutesOf(brk.end))) {
       return { valid: false, reason: "OVERLAPS_BREAK" };
+    }
+  }
+
+  for (const off of ctx.timeOff) {
+    if (off.staffId !== staff.id || off.active === false) continue;
+    if (params.localDate >= off.startDate && params.localDate <= off.endDate) {
+      return { valid: false, reason: "OVERLAPS_TIME_OFF" };
+    }
+  }
+
+  for (const block of ctx.blockedSlots) {
+    if (block.active === false) continue;
+    if (block.staffId && block.staffId !== staff.id) continue; // staff-specific block for a different staff member
+    if (block.localDate !== params.localDate) continue;
+    if (intervalsOverlap(start, end, minutesOf(block.startTime), minutesOf(block.endTime))) {
+      return { valid: false, reason: "OVERLAPS_BLOCK" };
     }
   }
 

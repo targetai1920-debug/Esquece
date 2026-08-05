@@ -4,6 +4,14 @@ import type { ClientConfig } from "@/config/schema";
 
 function baseConfig(): ClientConfig {
   return {
+    environment: "development",
+    crm: {
+      provider: "local",
+      webAppUrlEnv: "CRM_WEB_APP_URL",
+      apiKeyEnv: "CRM_API_KEY",
+      signingSecretEnv: "CRM_SIGNING_SECRET",
+      requestTimeoutMs: 12000,
+    },
     business: {
       name: "Test Shop",
       slug: "test-shop",
@@ -273,5 +281,81 @@ describe("validateClientConfig", () => {
     const result = toStrictResult(validateClientConfig(config));
     expect(result.ok).toBe(false);
     expect(result.errors.some((e) => e.path === "business.timezone")).toBe(true);
+  });
+
+  it("rejects environment=production with crm.provider=local", () => {
+    const config = baseConfig();
+    config.environment = "production";
+    config.crm.provider = "local";
+    const result = validateClientConfig(config);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.path === "crm.provider" && /almacenamiento local no persistente/.test(e.message))).toBe(true);
+  });
+
+  it("accepts environment=production with crm.provider=google-sheets-apps-script", () => {
+    const config = baseConfig();
+    config.environment = "production";
+    config.crm.provider = "google-sheets-apps-script";
+    const result = validateClientConfig(config);
+    expect(result.ok).toBe(true);
+    expect(result.errors.some((e) => e.path === "crm.provider")).toBe(false);
+  });
+
+  it("accepts environment=development or staging with crm.provider=local", () => {
+    for (const environment of ["development", "staging"] as const) {
+      const config = baseConfig();
+      config.environment = environment;
+      config.crm.provider = "local";
+      const result = validateClientConfig(config);
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  it("warns (does not block) when a not-implemented feature is enabled outside production", () => {
+    const config = baseConfig();
+    config.environment = "development";
+    config.features.whatsapp = true;
+    const result = validateClientConfig(config);
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.path === "features.whatsapp" && /no está implementado/.test(w.message))).toBe(true);
+  });
+
+  it("blocks a not-implemented feature enabled in production", () => {
+    const config = baseConfig();
+    config.environment = "production";
+    config.crm.provider = "google-sheets-apps-script";
+    config.features.whatsapp = true;
+    const result = validateClientConfig(config);
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.path === "features.whatsapp" && /no está implementado/.test(e.message))).toBe(true);
+  });
+
+  it("warns when an experimental feature is enabled in production, but does not block", () => {
+    const config = baseConfig();
+    config.environment = "production";
+    config.crm.provider = "google-sheets-apps-script";
+    config.features.emailNotifications = true;
+    const result = validateClientConfig(config);
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.path === "features.emailNotifications" && /experimental/.test(w.message))).toBe(true);
+  });
+
+  it("does not warn about an experimental feature outside production", () => {
+    const config = baseConfig();
+    config.environment = "development";
+    config.features.emailNotifications = true;
+    const result = validateClientConfig(config);
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.path === "features.emailNotifications")).toBe(false);
+  });
+
+  it("does not warn or error about a supported feature regardless of environment", () => {
+    const config = baseConfig();
+    config.environment = "production";
+    config.crm.provider = "google-sheets-apps-script";
+    config.features.faqs = true;
+    const result = validateClientConfig(config);
+    expect(result.ok).toBe(true);
+    expect(result.warnings.some((w) => w.path === "features.faqs")).toBe(false);
   });
 });

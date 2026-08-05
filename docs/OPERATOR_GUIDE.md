@@ -91,13 +91,43 @@ email siempre necesitan sus propias credenciales; el panel administrativo siempr
 
 ## 9. Cómo conectar el CRM
 
-El proyecto generado incluye un CRM en memoria (`LocalCrmClient`), inicializado desde
-`client-config.json` — funciona de inmediato para desarrollo y para negocios pequeños en
-un solo proceso. Si el negocio necesita persistencia real entre reinicios o mayor volumen,
-ver `.claude/skills/barbershop-crm-builder/references/architecture-and-decisions.md` para
-decidir entre un backend de hoja de cálculo + script, o una base de datos relacional —
-ambos se conectan implementando la misma interfaz `CrmClient` que ya usa todo el proyecto,
-sin tocar el resto del código.
+Cada configuración YAML declara qué CRM usar:
+
+```yaml
+crm:
+  provider: local                       # o: google-sheets-apps-script
+```
+
+- **`local`** (`LocalCrmClient`, en memoria): solo para desarrollo, pruebas, preview local
+  o demostraciones explícitas. **Pierde todas las reservas al reiniciar el proceso — nunca
+  lo uses para un negocio real en producción.** `environment: production` con
+  `crm.provider: local` directamente no genera (el validador lo bloquea con un error claro).
+- **`google-sheets-apps-script`** (`AppsScriptCrmClient`, persistente): el único proveedor
+  válido para producción. Reservas guardadas en Google Sheets vía un backend de Apps Script
+  firmado (HMAC-SHA256, protección contra replay, lock real, doble validación) — la misma
+  arquitectura probada del proyecto piloto, sin ningún dato ni credencial de ese piloto.
+
+Para conectar `google-sheets-apps-script`:
+
+```bash
+npm run prepare-crm -- --config ./clients/mi-nueva-barberia.yaml
+```
+
+Esto genera `crm-init/mi-nueva-barberia/` con:
+
+- `seed.json` — servicios, personal, relaciones servicio-trabajador, horarios y descansos,
+  ya derivados del YAML.
+- `APPS_SCRIPT_CONNECT_GUIDE.md` — los pasos humanos **exactos y mínimos** para crear la
+  hoja de cálculo, desplegar el proyecto de Apps Script y configurar las variables de
+  entorno. Ningún paso de ese documento se ejecuta automáticamente — Google requiere una
+  sesión autenticada de una persona con acceso.
+- `run-import-seed.mjs` — script que carga `seed.json` contra el Web App ya desplegado y
+  termina con un **health check real** (`GET /api/health/crm` una vez desplegada la
+  aplicación, o la acción `health` directamente).
+
+**No se considera el CRM de un cliente conectado hasta que ese health check responde
+`status: "live"`.** Completar los pasos de la guía sin ese resultado no cuenta como
+conectado.
 
 ## 10. Cómo desplegar
 
@@ -113,13 +143,49 @@ npm run scan-contamination -- --dir ./generated/mi-nueva-barberia
 Termina con error si encuentra el nombre, dominio o cualquier otro rastro de un cliente
 anterior. Corré esto siempre antes de entregar el proyecto.
 
-## 12. Cómo entregar el proyecto
+## 12. Repositorio: un proyecto generado por cliente, nunca todos en el mismo repo
+
+`generated/` (y `crm-init/`) están en `.gitignore` de este repositorio — **el repositorio
+de la fábrica nunca acumula una copia completa de cada cliente generado.** Solo se
+mantiene versionada una fixture ficticia pequeña (`clients/reemplazar-slug.yaml`, la
+plantilla de configuración vacía con placeholders `REEMPLAZAR_*`, usada como punto de
+partida y por las pruebas automatizadas) — nunca el proyecto ya generado a partir de un
+cliente real.
+
+Para entregar un cliente real:
+
+1. Generá el proyecto localmente: `npm run create-client -- --config ./clients/<slug>.yaml --output ./generated/<slug>`.
+2. Creá un repositorio Git **nuevo e independiente** para ese cliente (no un directorio
+   dentro de este repositorio, no una rama de este repositorio):
+   ```bash
+   cd generated/<slug>
+   git init
+   git add -A
+   git commit -m "Initial generation for <slug>"
+   git remote add origin <URL del repo nuevo, dedicado a este cliente>
+   git push -u origin main
+   ```
+3. Los datos de ese cliente (`client-config.json`, credenciales, `crm-init/<slug>/`) viven
+   exclusivamente en ese repositorio nuevo — nunca se vuelven a copiar al repositorio de la
+   fábrica, ni a un directorio compartido entre clientes.
+4. El repositorio de la fábrica (este) solo recibe cambios cuando cambia la plantilla, el
+   generador o el skill — nunca datos de un cliente específico.
+
+Esto evita: (a) que el repo de la fábrica crezca sin límite con cada cliente nuevo, (b) que
+datos de un cliente aparezcan por error en el proyecto generado de otro, (c) que un login
+comprometido en el repo de la fábrica exponga datos de todos los clientes a la vez.
+
+## 13. Cómo entregar el proyecto
 
 1. Confirmá que lint/typecheck/test/build pasan.
 2. Confirmá que el escaneo de contaminación pasa.
 3. Revisá `generated/<slug>/DESIGN_REVIEW_CHECKLIST.md` visualmente (`npm run dev`).
-4. Entregá al cliente: la lista de credenciales pendientes (`CREDENTIALS_PENDING.md`) y la
+4. Si `crm.provider` es `google-sheets-apps-script`, confirmá que el health check de
+   `npm run prepare-crm` (paso 9) respondió `status: "live"` antes de entregar — nunca
+   antes.
+5. Entregá al cliente: la lista de credenciales pendientes (`CREDENTIALS_PENDING.md`) y la
    guía de despliegue (`DEPLOYMENT_GUIDE.md`).
-5. El resto del trabajo (obtener credenciales, aprobar diseño, conectar cuentas externas)
+6. Seguí el paso 12 para crear el repositorio independiente de este cliente.
+7. El resto del trabajo (obtener credenciales, aprobar diseño, conectar cuentas externas)
    queda del lado del cliente o de la persona con esos accesos — no requiere volver a tocar
    el motor de reservas, el CRM, la seguridad ni las pruebas.

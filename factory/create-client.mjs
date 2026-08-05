@@ -5,13 +5,25 @@
 // .claude/skills/barbershop-crm-builder/references/factory-mode-and-client-onboarding.md
 // for the design this implements.
 //
-// Usage:
-//   node factory/create-client.mjs --config ./clients/<slug>.yaml --output ./generated/<slug> [--force] [--strict]
+// Usage (via `npm run create-client --`, which supplies the tsx loader):
+//   node --import tsx/esm factory/create-client.mjs --config ./clients/<slug>.yaml --output ./generated/<slug> [--force] [--strict]
+//
+// Validation is NOT reimplemented here. This file imports the real,
+// type-checked validator straight from the template
+// (templates/barbershop-booking/src/config/validate.ts) via tsx's ESM
+// loader — a single source of truth for the config schema and its
+// business-rule validation, used identically by the generator, the
+// template's own runtime, and every test suite. See
+// .claude/skills/barbershop-crm-builder/references/factory-mode-and-client-onboarding.md
+// §"Client configuration as data" and the "single source of truth" note in
+// this task's final report for why this replaced an earlier hand-ported
+// duplicate JS validator.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { validateClientConfig, toStrictResult } from "./lib/validateClientConfig.mjs";
+import { validateClientConfig, toStrictResult } from "../templates/barbershop-booking/src/config/validate.ts";
+import { FEATURE_STATUS } from "../templates/barbershop-booking/src/config/schema.ts";
 import { scanContamination } from "./scan-contamination.mjs";
 
 const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -194,9 +206,14 @@ function buildGenerationReport({ config, warnings, assetReport, scan, outputDir,
   lines.push(scan.ok ? `OK — ${scan.filesScanned} rutas escaneadas, sin hallazgos.` : `**${scan.findings.length} hallazgo(s)** — revisar antes de usar este proyecto.`);
   for (const f of scan.findings) lines.push(`- [${f.kind}] ${f.file}: ${f.detail}`);
   lines.push("");
+  lines.push("## CRM");
+  lines.push(`- provider: \`${config.crm.provider}\`${config.crm.provider === "local" ? " (en memoria — solo desarrollo/pruebas/preview/demo, nunca producción)" : " (persistente — Google Sheets + Apps Script)"}`);
+  lines.push("");
   lines.push("## Módulos opcionales");
+  lines.push("Estado de implementación real, no solo si el flag está habilitado — ver src/config/schema.ts (`FEATURE_STATUS`): `supported` funciona de punta a punta; `experimental` funciona pero no está completamente probado en producción; `not-implemented` no debe activarse en producción (la validación lo bloquea).");
   for (const [key, value] of Object.entries(config.features)) {
-    lines.push(`- ${key}: ${value ? "habilitado" : "deshabilitado"}`);
+    const status = FEATURE_STATUS[key] ?? "supported";
+    lines.push(`- ${key}: ${value ? "habilitado" : "deshabilitado"} (${status})`);
   }
   lines.push("");
   lines.push("## Próximos pasos");
@@ -226,7 +243,20 @@ function buildDeploymentGuide(config) {
   if (config.features.googleCalendar) lines.push("9. Completar la configuración de Google Calendar antes de activar la sincronización.");
   if (config.features.emailNotifications) lines.push("10. Completar la configuración del proveedor de email antes de activar notificaciones.");
   lines.push("");
-  lines.push("El CRM de este proyecto es un almacenamiento en memoria (LocalCrmClient), inicializado desde `client-config.json` en cada arranque del proceso — ver README.md del proyecto generado para cuándo conviene reemplazarlo por un backend persistente (hoja de cálculo + script, o una base de datos), siguiendo la interfaz `CrmClient` ya definida en `src/lib/crm/types.ts`.");
+  lines.push("## CRM");
+  lines.push("");
+  if (config.crm.provider === "google-sheets-apps-script") {
+    lines.push(`Este proyecto está configurado con \`crm.provider: google-sheets-apps-script\` — reservas persistentes en Google Sheets vía un backend de Apps Script firmado, no en memoria. **No puede servir tráfico real sin completarlo.**`);
+    lines.push("");
+    lines.push(`1. Ejecuta \`npm run prepare-crm -- --config <ruta-al-yaml-de-este-cliente>\` desde la raíz del repositorio de la fábrica (no desde esta carpeta) — genera \`crm-init/${config.business.slug}/\` con los datos iniciales y una guía de conexión.`);
+    lines.push(`2. Sigue \`crm-init/${config.business.slug}/APPS_SCRIPT_CONNECT_GUIDE.md\` paso a paso — crea la hoja de cálculo, despliega el proyecto de Apps Script (el código está en \`apps-script/\` dentro de esta misma carpeta generada), y define las variables de entorno \`${config.crm.webAppUrlEnv}\`, \`${config.crm.apiKeyEnv}\`, \`${config.crm.signingSecretEnv}\`.`);
+    lines.push(`3. Ejecuta el script generado \`run-import-seed.mjs\` para cargar los datos iniciales y confirmar la conexión con un health check real (\`GET /api/health/crm\` una vez desplegada esta aplicación, o directamente la acción \`health\` del script).`);
+    lines.push("4. No declares el CRM de este cliente como conectado hasta que ese health check responda `status: \"live\"`.");
+  } else {
+    lines.push(`Este proyecto está configurado con \`crm.provider: local\` (\`LocalCrmClient\`, almacenamiento en memoria, inicializado desde \`client-config.json\` en cada arranque del proceso) — **válido solo para desarrollo, pruebas, preview local o demostraciones explícitas, nunca para producción.** Las reservas se pierden al reiniciar el proceso.`);
+    lines.push("");
+    lines.push(`Para servir tráfico real, cambia \`crm.provider\` a \`google-sheets-apps-script\` en la configuración YAML de este cliente, regenera el proyecto, y sigue los pasos de conexión que \`npm run prepare-crm\` produce (ver arriba). La validación (\`npm run typecheck\`/generador) rechaza automáticamente una configuración marcada \`environment: production\` con \`crm.provider: local\`.`);
+  }
   lines.push("");
   return lines.join("\n");
 }
@@ -241,6 +271,14 @@ function buildCredentialsPending(config) {
   lines.push("- `AUTH_SECRET` — valor aleatorio nuevo para firmar sesiones del panel administrativo.");
   lines.push("- `ADMIN_EMAIL` / `ADMIN_PASSWORD_HASH` — credenciales reales del panel administrativo (generar el hash con el script del proyecto).");
   lines.push("- Dominio y hosting reales de la aplicación.");
+  if (config.crm.provider === "google-sheets-apps-script") {
+    lines.push("");
+    lines.push("## CRM persistente (Google Sheets + Apps Script — obligatorio, este proyecto no funciona en producción sin esto)");
+    lines.push(`- \`${config.crm.webAppUrlEnv}\` — URL de la implementación del Web App de Apps Script.`);
+    lines.push(`- \`${config.crm.apiKeyEnv}\` — API key generada específicamente para este cliente (Script Property \`CRM_API_KEY\` del lado de Apps Script).`);
+    lines.push(`- \`${config.crm.signingSecretEnv}\` — secreto de firma HMAC generado específicamente para este cliente (Script Property \`CRM_SIGNING_SECRET\` del lado de Apps Script).`);
+    lines.push(`- Ninguno de estos tres valores fue generado automáticamente — ver DEPLOYMENT_GUIDE.md y \`npm run prepare-crm\` para los pasos exactos de conexión.`);
+  }
   if (config.features.whatsapp) {
     lines.push("");
     lines.push("## WhatsApp (habilitado en este proyecto)");

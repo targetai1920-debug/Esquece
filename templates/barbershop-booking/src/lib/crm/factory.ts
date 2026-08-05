@@ -1,6 +1,7 @@
 import { loadClientConfig } from "../../config/loadConfig";
 import { LocalCrmClient, type LocalCrmSeed } from "./localClient";
-import type { BusinessSettings, Faq, Promotion, Service, Staff } from "./types";
+import { AppsScriptCrmClient } from "./appsScriptClient";
+import type { BusinessSettings, CrmClient, Faq, Promotion, Service, Staff } from "./types";
 import type { ClientConfig } from "../../config/schema";
 
 export function seedFromClientConfig(config: ClientConfig): LocalCrmSeed {
@@ -57,13 +58,49 @@ export function seedFromClientConfig(config: ClientConfig): LocalCrmSeed {
   return { settings, services, staff, faqs, promotions };
 }
 
-let singleton: LocalCrmClient | null = null;
+function requireEnv(varName: string, purpose: string): string {
+  const value = process.env[varName];
+  if (!value) {
+    throw new Error(
+      `Falta la variable de entorno "${varName}" (${purpose}). ` +
+        `crm.provider está configurado como "google-sheets-apps-script", que requiere credenciales reales en variables de entorno — nunca en el código ni en client-config.json.`,
+    );
+  }
+  return value;
+}
+
+function buildCrmClient(config: ClientConfig): CrmClient {
+  // Defense in depth: factory/create-client.mjs's validator (single source
+  // of truth, src/config/validate.ts) already blocks generating a
+  // production config with crm.provider "local" — this repeats the check
+  // at runtime so a hand-edited client-config.json (bypassing the
+  // generator) can never silently start a production deployment on the
+  // in-memory CRM.
+  if (config.environment === "production" && config.crm.provider === "local") {
+    throw new Error(
+      `Error: environment está configurado como "production", pero crm.provider utiliza almacenamiento local no persistente ("local"). Usa "google-sheets-apps-script" (o un backend persistente equivalente) para producción.`,
+    );
+  }
+
+  if (config.crm.provider === "google-sheets-apps-script") {
+    return new AppsScriptCrmClient({
+      webAppUrl: requireEnv(config.crm.webAppUrlEnv, "URL del Web App de Apps Script"),
+      apiKey: requireEnv(config.crm.apiKeyEnv, "API key del CRM"),
+      signingSecret: requireEnv(config.crm.signingSecretEnv, "secreto de firma HMAC del CRM"),
+      requestTimeoutMs: config.crm.requestTimeoutMs,
+    });
+  }
+
+  return new LocalCrmClient(seedFromClientConfig(config));
+}
+
+let singleton: CrmClient | null = null;
 
 /** One shared CRM client instance per process — every consumer (public API, admin) calls this. */
-export function getCrmClient(): LocalCrmClient {
+export function getCrmClient(): CrmClient {
   if (!singleton) {
     const config = loadClientConfig();
-    singleton = new LocalCrmClient(seedFromClientConfig(config));
+    singleton = buildCrmClient(config);
   }
   return singleton;
 }

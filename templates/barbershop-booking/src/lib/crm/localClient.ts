@@ -7,12 +7,14 @@ import {
   type AvailabilityContext,
 } from "../booking/availability";
 import { withLock } from "../booking/lock";
+import { CrmError } from "./errors";
 import type {
   Appointment,
   AppointmentStatus,
   AuditEntry,
   AvailabilityInput,
   AvailableSlot,
+  BlockedSlot,
   BusinessSettings,
   CancelInput,
   Customer,
@@ -24,6 +26,7 @@ import type {
   RescheduleInput,
   Service,
   Staff,
+  TimeOff,
   ValidateSlotInput,
 } from "./types";
 
@@ -33,16 +36,6 @@ export interface LocalCrmSeed {
   staff: Staff[];
   faqs: Faq[];
   promotions: Promotion[];
-}
-
-class CrmError extends Error {
-  constructor(
-    public code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = "CrmError";
-  }
 }
 
 function normalizePhone(phone: string): string {
@@ -71,6 +64,8 @@ export class LocalCrmClient implements CrmClient {
   private appointments: Appointment[] = [];
   private customers: Customer[] = [];
   private auditLog: AuditEntry[] = [];
+  private timeOff: TimeOff[] = [];
+  private blockedSlots: BlockedSlot[] = [];
   private idempotencyIndex = new Map<string, string>(); // key -> appointmentId
   private managementTokens = new Map<string, string>(); // appointmentId -> tokenHash
   private now: () => Date;
@@ -95,6 +90,8 @@ export class LocalCrmClient implements CrmClient {
       services: this.services,
       staff: this.staff,
       appointments: this.appointments,
+      timeOff: this.timeOff,
+      blockedSlots: this.blockedSlots,
       nowLocal: this.nowLocalString(),
     };
   }
@@ -111,8 +108,16 @@ export class LocalCrmClient implements CrmClient {
     return this.services.filter((s) => s.active);
   }
 
+  async adminListServices(): Promise<Service[]> {
+    return [...this.services];
+  }
+
   async listStaff(): Promise<Staff[]> {
     return this.staff.filter((s) => s.active && s.publicBooking);
+  }
+
+  async adminListStaff(): Promise<Staff[]> {
+    return [...this.staff];
   }
 
   async listStaffForService(serviceId: string): Promise<Staff[]> {
@@ -314,6 +319,130 @@ export class LocalCrmClient implements CrmClient {
   async listAuditLog(): Promise<AuditEntry[]> {
     return this.auditLog;
   }
+
+  async health(): Promise<{ status: "live"; schemaVersion: string }> {
+    return { status: "live", schemaVersion: "1" };
+  }
+
+  private setAppointmentStatus(appointmentId: string, status: AppointmentStatus, action: string): Appointment {
+    const appt = this.appointments.find((a) => a.id === appointmentId);
+    if (!appt) throw new CrmError("APPOINTMENT_NOT_FOUND", "La cita no existe.");
+    appt.status = status;
+    appt.updatedAt = new Date().toISOString();
+    this.audit({ action, entityType: "Appointment", entityId: appt.id, actorType: "admin" });
+    return appt;
+  }
+
+  async confirmAppointment(appointmentId: string): Promise<Appointment> {
+    return this.setAppointmentStatus(appointmentId, "CONFIRMED", "confirmAppointment");
+  }
+
+  async completeAppointment(appointmentId: string): Promise<Appointment> {
+    return this.setAppointmentStatus(appointmentId, "COMPLETED", "completeAppointment");
+  }
+
+  async markNoShow(appointmentId: string): Promise<Appointment> {
+    return this.setAppointmentStatus(appointmentId, "NO_SHOW", "markNoShow");
+  }
+
+  async adminCancelAppointment(appointmentId: string, reason?: string): Promise<Appointment> {
+    return withLock(() => {
+      const appt = this.appointments.find((a) => a.id === appointmentId);
+      if (!appt) throw new CrmError("APPOINTMENT_NOT_FOUND", "La cita no existe.");
+      if (appt.status === "CANCELLED") return appt;
+      if (appt.status === "COMPLETED") throw new CrmError("APPOINTMENT_NOT_CHANGEABLE", "La cita ya fue completada.");
+      appt.status = "CANCELLED";
+      appt.cancelledAt = new Date().toISOString();
+      appt.cancellationReason = reason;
+      appt.updatedAt = new Date().toISOString();
+      this.audit({ action: "adminCancelAppointment", entityType: "Appointment", entityId: appt.id, actorType: "admin" });
+      return appt;
+    });
+  }
+
+  async adminRescheduleAppointment(appointmentId: string, newLocalDate: string, newLocalStartTime: string): Promise<Appointment> {
+    return withLock(() => {
+      const appt = this.appointments.find((a) => a.id === appointmentId);
+      if (!appt) throw new CrmError("APPOINTMENT_NOT_FOUND", "La cita no existe.");
+      if (appt.status !== "PENDING" && appt.status !== "CONFIRMED") {
+        throw new CrmError("APPOINTMENT_NOT_CHANGEABLE", "La cita no puede reprogramarse en su estado actual.");
+      }
+      const ctx = this.buildContext();
+      const check = checkSlotValidity(ctx, {
+        serviceId: appt.serviceId,
+        staffId: appt.staffId,
+        localDate: newLocalDate,
+        localStartTime: newLocalStartTime,
+        excludeAppointmentId: appt.id,
+      });
+      if (!check.valid) throw new CrmError(check.reason, "El nuevo horario no está disponible.");
+      const endMinutes = toMinutes(newLocalStartTime) + appt.serviceDurationSnapshot + appt.serviceBufferSnapshot;
+      appt.localDate = newLocalDate;
+      appt.localStartTime = newLocalStartTime;
+      appt.localEndTime = toHHMM(endMinutes);
+      appt.updatedAt = new Date().toISOString();
+      this.audit({ action: "adminRescheduleAppointment", entityType: "Appointment", entityId: appt.id, actorType: "admin" });
+      return appt;
+    });
+  }
+
+  async listBlockedSlots(): Promise<BlockedSlot[]> {
+    return this.blockedSlots;
+  }
+
+  async createBlockedSlot(input: { staffId?: string; localDate: string; startTime: string; endTime: string; reason?: string }): Promise<BlockedSlot> {
+    const created: BlockedSlot = { id: randomUUID(), active: true, ...input };
+    this.blockedSlots.push(created);
+    this.audit({ action: "createBlockedSlot", entityType: "BlockedSlot", entityId: created.id, actorType: "admin" });
+    return created;
+  }
+
+  async deleteBlockedSlot(id: string): Promise<void> {
+    const block = this.blockedSlots.find((b) => b.id === id);
+    if (block) block.active = false;
+    this.audit({ action: "deleteBlockedSlot", entityType: "BlockedSlot", entityId: id, actorType: "admin" });
+  }
+
+  async listTimeOff(): Promise<TimeOff[]> {
+    return this.timeOff;
+  }
+
+  async createTimeOff(input: { staffId: string; startDate: string; endDate: string; reason?: string }): Promise<TimeOff> {
+    const created: TimeOff = { id: randomUUID(), active: true, ...input };
+    this.timeOff.push(created);
+    this.audit({ action: "createTimeOff", entityType: "TimeOff", entityId: created.id, actorType: "admin" });
+    return created;
+  }
+
+  async deleteTimeOff(id: string): Promise<void> {
+    const off = this.timeOff.find((t) => t.id === id);
+    if (off) off.active = false;
+    this.audit({ action: "deleteTimeOff", entityType: "TimeOff", entityId: id, actorType: "admin" });
+  }
+
+  async adminSetServiceActive(serviceId: string, active: boolean): Promise<Service> {
+    const service = this.services.find((s) => s.id === serviceId);
+    if (!service) throw new CrmError("SERVICE_NOT_FOUND", "El servicio no existe.");
+    service.active = active;
+    this.audit({ action: "adminSetServiceActive", entityType: "Service", entityId: serviceId, actorType: "admin", metadata: { active } });
+    return service;
+  }
+
+  async adminSetServicePrice(serviceId: string, price: number): Promise<Service> {
+    const service = this.services.find((s) => s.id === serviceId);
+    if (!service) throw new CrmError("SERVICE_NOT_FOUND", "El servicio no existe.");
+    service.price = price;
+    this.audit({ action: "adminSetServicePrice", entityType: "Service", entityId: serviceId, actorType: "admin", metadata: { price } });
+    return service;
+  }
+
+  async adminSetStaffActive(staffId: string, active: boolean): Promise<Staff> {
+    const staff = this.staff.find((s) => s.id === staffId);
+    if (!staff) throw new CrmError("STAFF_NOT_FOUND", "El profesional no existe.");
+    staff.active = active;
+    this.audit({ action: "adminSetStaffActive", entityType: "Staff", entityId: staffId, actorType: "admin", metadata: { active } });
+    return staff;
+  }
 }
 
 function toMinutes(hhmm: string): number {
@@ -332,5 +461,3 @@ function generateReference(localDate: string): string {
   const randomPart = randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase();
   return `REF-${datePart}-${randomPart}`;
 }
-
-export { CrmError };
