@@ -1,0 +1,38 @@
+# Canonical source of the barbershop factory (generator + template + tests)
+# this skill orchestrates. Read by scripts/bootstrap-factory.mjs — do not
+# rename these keys without updating that script.
+#
+# This file is the single source of truth for "where is the factory" and
+# "what is the minimum version this skill knows how to drive." A session
+# using this skill (project-scoped or user-scoped, in any directory) reads
+# this file first, before asking the human anything about repository
+# location, branch, or commit.
+factory:
+  repository: "https://github.com/targetai1920-debug/esquece"
+  # The branch that carries the factory (generator, template, CRM, admin
+  # panel). Never main — see references/factory-bootstrap-and-capabilities.md
+  # for why main is intentionally not the factory's home branch yet.
+  branch: "claude/barbershop-factory"
+  # Full 40-char commit hash, not an abbreviation — scripts/bootstrap-factory.mjs
+  # uses `git merge-base --is-ancestor` against this exact value. This is a
+  # FLOOR ("at least this new"), not a pin — a newer commit on the same
+  # branch is fine and expected; an older or unrelated commit is not.
+  minimumCommit: "f4019cd4db732933bb7a27fb12954e8f3e62024e"
+  # Bumped whenever a change to factory.yaml, capabilities.yaml, the
+  # bootstrap/doctor/orchestrator scripts, or the generator's external
+  # contract (create-client/prepare-crm CLI flags, clients/*.yaml schema)
+  # would matter to a session driving this skill. Independent of npm
+  # package versions inside templates/barbershop-booking.
+  version: "1.0.0"
+  # Where scripts/bootstrap-factory.mjs clones/reuses the factory when the
+  # current working directory is not already an existing checkout of it.
+  # A stable, well-known path so repeated bootstraps across unrelated
+  # working directories reuse one clone instead of re-cloning every time.
+  defaultLocalPath: "~/.barbershop-factory/esquece"
+  requiredPaths:
+    - "factory/create-client.mjs"
+    - "factory/prepare-crm.mjs"
+    - "factory/scan-contamination.mjs"
+    - "templates/barbershop-booking"
+    - "package.json"
+    - "clients/reemplazar-slug.yaml"

@@ -1,0 +1,31 @@
+# What the factory can actually deliver right now, as opposed to what a
+# feature flag merely toggles on. Read this before promising a capability
+# to a human — never infer "supported" from a boolean being settable in
+# clients/<slug>.yaml's `features:` block.
+#
+# This is a human/skill-readable mirror of FEATURE_STATUS in
+# templates/barbershop-booking/src/config/schema.ts, which remains the
+# single source of truth actually enforced by the generator's validator
+# (a "not-implemented" feature enabled with environment: production is
+# rejected there, not here). scripts/doctor.mjs cross-checks this file
+# against schema.ts on every run and warns on drift — if they disagree,
+# schema.ts is correct and this file is stale.
+#
+# States:
+#   supported      - works end-to-end, exercised by the test suite.
+#   experimental    - works, but not fully proven for production traffic.
+#   not-implemented - code path does not exist; toggling the feature flag
+#                      on is a harmless no-op outside production, and the
+#                      generator's validator blocks it in production.
+capabilities:
+  publicBookingWebsite: supported
+  adminDashboard: supported
+  googleSheetsAppsScriptCrm: supported
+  localPreviewCrm: supported
+  emailNotifications: experimental
+  whatsapp: not-implemented
+  aiAssistant: not-implemented
+  googleCalendar: not-implemented
+  reminders: not-implemented
+  promotions: supported
+  faqs: supported

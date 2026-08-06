@@ -218,6 +218,23 @@ const UNIVERSAL_RULE_PATTERNS = [
 const CONTENT_SCAN_EXEMPT = new Set([
   "REDACTION_REPORT.md",
   "scripts/validate-skill-structure.mjs",
+  // factory.yaml names this skill's own engine's real repository
+  // (github.com/.../esquece) — that is the factory's actual coordinates,
+  // not a leaked *client* identity. The blocklist exists to keep a
+  // previous CLIENT's business identity out of files that shape a NEW
+  // client's project; it was never meant to forbid the factory from
+  // knowing where it itself lives.
+  "factory.yaml",
+  // country-defaults.mjs is a general-purpose country -> {currency,
+  // timezone, locale} lookup table (~25 countries) used only to fill a
+  // gap the human didn't specify — Bolivia/America/La_Paz/BOB appear in
+  // it as ONE ordinary row among many, with no special treatment, which
+  // is exactly what the table is for (a future Bolivian client should
+  // get correct inference too). That is categorically different from
+  // what this blocklist targets: presenting BOB/La Paz/+591 as *the*
+  // universal default regardless of client, or leaking pilot-specific
+  // business details. See the file's own header comment.
+  "scripts/country-defaults.mjs",
 ]);
 
 for (const f of allFiles) {
